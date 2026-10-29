@@ -1,6 +1,6 @@
 # Scenario A: Unified Service Scheduler — C4 Model
 
-This model follows the challenge requirements: a customer requests a service appointment for a vehicle, service type, dealership, and desired time; the system checks for a qualified technician and service bay across the full service duration; a successful booking is stored as an appointment associating the customer, vehicle, technician, and bay.
+This model follows the challenge requirements: a customer requests a service appointment for a vehicle, service type, dealership, and desired time; the system prevents overlapping appointments for the vehicle and checks for a qualified technician and service bay across the full service duration; a successful booking is stored as an appointment associating the customer, vehicle, technician, and bay.
 
 ## Level 1 — System Context
 
@@ -44,8 +44,8 @@ C4Component
         Component(validation, "Request Validator", "Application component", "Checks required identifiers, requested time, and service duration inputs.")
         Component(orchestrator, "Scheduling Orchestrator", "Application service", "Coordinates eligibility, availability, and appointment creation as one booking workflow.")
         Component(eligibility, "Technician Qualification Checker", "Domain service", "Finds technicians qualified for the requested service type at the selected dealership.")
-        Component(availability, "Resource Availability Checker", "Domain service", "Checks technician and service-bay schedules for the entire service duration.")
-        Component(repository, "Appointment Repository", "Persistence adapter", "Loads resource schedules and persists the confirmed appointment and its resource associations.")
+        Component(availability, "Resource Availability Checker", "Domain service", "Checks vehicle, technician, and service-bay schedules for the entire service duration.")
+        Component(repository, "Appointment Repository", "Persistence adapter", "Loads vehicle and resource schedules and persists the confirmed appointment and its associations.")
     }
 
     ContainerDb(db, "Scheduler Database", "Relational database", "Stores appointment and resource scheduling data.")
@@ -53,9 +53,9 @@ C4Component
     Rel(booking, validation, "Validates request")
     Rel(booking, orchestrator, "Starts scheduling workflow")
     Rel(orchestrator, eligibility, "Gets qualified technicians")
-    Rel(orchestrator, availability, "Finds a slot with both resources free")
+    Rel(orchestrator, availability, "Finds a slot with vehicle, technician, and bay free")
     Rel(eligibility, repository, "Reads qualifications")
-    Rel(availability, repository, "Reads technician and bay bookings")
+    Rel(availability, repository, "Reads vehicle, technician, and bay bookings")
     Rel(orchestrator, repository, "Creates confirmed appointment")
     Rel(repository, db, "Reads and writes", "SQL")
 ```
@@ -67,13 +67,13 @@ C4Component
 1. The customer submits a vehicle, service type, dealership, and desired time through the web app.
 2. The API validates the request and resolves the requested service duration.
 3. The scheduler finds technicians qualified for that service at that dealership.
-4. It checks candidate technicians and service bays for a continuous free interval covering the entire service duration. A partial overlap or availability of only one resource is insufficient.
-5. If no pair of resources is available, the request is not confirmed and the customer receives an unavailable result (and may choose another time).
-6. If both resources are available, the system creates one persistent appointment associating customer, vehicle, technician, and service bay.
+4. It checks that the vehicle has no confirmed appointment overlapping the requested interval, then checks candidate technicians and service bays for a continuous free interval covering the entire service duration. A partial overlap or availability of only one resource is insufficient.
+5. If the vehicle is already booked or no technician/bay pair is available, the request is not confirmed and the customer receives an unavailable result (and may choose another time).
+6. If the vehicle and both resources are available, the system creates one persistent appointment associating the customer, vehicle, technician, and service bay.
 
 ## Assumptions captured in the model
 
 - The booking user is modeled as the customer; the challenge does not specify separate staff-facing workflows.
 - The scheduler owns its booking and resource data. No external dealer-management system or notification provider is required by the stated scenario.
-- Appointment creation must be atomic with resource allocation so two concurrent requests cannot confirm overlapping use of the same technician or bay. The diagram leaves the database transaction/locking technique as an implementation decision.
+- Appointment creation must be atomic with availability checks so two concurrent requests cannot confirm overlapping appointments for the same vehicle, technician, or bay. The implementation locks the dealership and vehicle rows within a transaction.
 - Authentication, payment, cancellation, rescheduling, and notification behavior are outside the stated acceptance criteria and are not modeled.

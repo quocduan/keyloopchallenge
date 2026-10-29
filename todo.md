@@ -6,6 +6,7 @@
 - [ ] Implement the full test list.
   - [ ] check test coverage
   - [ ] switch test code to using jpa+ hibernate
+- [ ] use test --> add more human covered testcases
 - [ ] check whether Flyway is still working while using jpa+hibernate
 - [ ] Check any missing technologies in the code from the current selected technologies table
 - [ ] Create script for walkthrough video

@@ -43,3 +43,5 @@ CREATE TABLE appointment (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (ends_at > starts_at)
 );
+
+CREATE INDEX idx_appointment_vehicle_time ON appointment(vehicle_id, starts_at, ends_at);

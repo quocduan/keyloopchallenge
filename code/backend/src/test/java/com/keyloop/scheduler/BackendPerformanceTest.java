@@ -107,13 +107,15 @@ class BackendPerformanceTest {
         for (int id = 2; id <= requests; id++) {
             int resourceId = id + 100;
             jdbc.update("INSERT INTO dealership(id,name) VALUES (?,?)", id, "Dealer " + id);
+            jdbc.update("INSERT INTO vehicle(id,vin,make,model,model_year) VALUES (?,?,?,?,?)", id,
+                    String.format("%017d", id), "Make " + id, "Model " + id, 2024);
             jdbc.update("INSERT INTO technician(id,dealership_id,name,service_type_id) VALUES (?,?,?,1)",
                     resourceId, id, "Technician " + id);
             jdbc.update("INSERT INTO service_bay(id,dealership_id,name) VALUES (?,?,?)",
                     resourceId, id, "Bay " + id);
         }
         List<Supplier<Integer>> tasks = IntStream.rangeClosed(1, requests)
-                .mapToObj(id -> request("POST", "/api/appointments", bookingBody(id, START.plusDays(id))))
+                .mapToObj(id -> request("POST", "/api/appointments", bookingBody(id, id, START.plusDays(id))))
                 .toList();
         Measurement measurement = run("booking-throughput-independent-dealerships", tasks,
                 Math.min(16, requests), status -> status == 201);
@@ -256,7 +258,11 @@ class BackendPerformanceTest {
     }
 
     private String bookingBody(long dealershipId, LocalDateTime startsAt) {
-        return "{\"dealershipId\":" + dealershipId + ",\"vehicleId\":1," +
+        return bookingBody(dealershipId, 1, startsAt);
+    }
+
+    private String bookingBody(long dealershipId, long vehicleId, LocalDateTime startsAt) {
+        return "{\"dealershipId\":" + dealershipId + ",\"vehicleId\":" + vehicleId + "," +
                 "\"serviceTypeId\":1,\"desiredStart\":\"" + startsAt + "\"}";
     }
 

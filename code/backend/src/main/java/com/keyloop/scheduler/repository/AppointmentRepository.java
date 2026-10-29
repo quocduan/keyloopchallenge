@@ -10,6 +10,15 @@ import org.springframework.data.repository.query.Param;
 public interface AppointmentRepository extends JpaRepository<Appointment, Long> {
     @Query("""
             select (count(a) > 0) from Appointment a
+            where a.vehicle.id = :vehicleId and a.status = 'CONFIRMED'
+              and a.startsAt < :requestedEnd and a.endsAt > :requestedStart
+            """)
+    boolean vehicleHasOverlap(@Param("vehicleId") Long vehicleId,
+                              @Param("requestedStart") LocalDateTime requestedStart,
+                              @Param("requestedEnd") LocalDateTime requestedEnd);
+
+    @Query("""
+            select (count(a) > 0) from Appointment a
             where a.technician.id = :technicianId and a.status = 'CONFIRMED'
               and a.startsAt < :requestedEnd and a.endsAt > :requestedStart
             """)

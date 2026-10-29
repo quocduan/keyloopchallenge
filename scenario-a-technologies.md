@@ -28,6 +28,6 @@ The Vue page can guide the customer through selecting a dealership, vehicle, ser
 
 ## Booking safety
 
-The backend should check availability and reserve both the qualified technician and service bay within a transaction before creating the appointment. With MySQL, use **InnoDB transactions and an explicit locking or resource-slot strategy** to prevent concurrent requests from booking overlapping time on the same technician or bay. Test that behavior against MySQL with Testcontainers.
+The backend should check availability and reserve the vehicle, qualified technician, and service bay within a transaction before creating the appointment. With MySQL, use **InnoDB transactions and row locks or a shared reservation strategy** to prevent concurrent requests from creating overlapping appointments for the same vehicle or reusing the same technician or bay. Test that behavior against MySQL with Testcontainers.
 
 For a focused implementation, start with **Spring Boot, MySQL, Flyway, OpenAPI, and Vue 3**, then add the tests and observability components as the booking flow takes shape.

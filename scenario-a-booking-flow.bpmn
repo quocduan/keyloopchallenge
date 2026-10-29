@@ -21,16 +21,16 @@
       <bpmn:incoming>Flow_Valid</bpmn:incoming>
       <bpmn:outgoing>Flow_4</bpmn:outgoing>
     </bpmn:task>
-    <bpmn:task id="Task_CheckPair" name="Find technician and bay free for entire service duration">
+    <bpmn:task id="Task_CheckPair" name="Check vehicle, technician and bay availability for full duration">
       <bpmn:incoming>Flow_4</bpmn:incoming>
       <bpmn:outgoing>Flow_5</bpmn:outgoing>
     </bpmn:task>
-    <bpmn:exclusiveGateway id="Gateway_PairAvailable" name="Both resources available?" default="Flow_Unavailable">
+    <bpmn:exclusiveGateway id="Gateway_PairAvailable" name="Vehicle and both resources available?" default="Flow_Unavailable">
       <bpmn:incoming>Flow_5</bpmn:incoming>
       <bpmn:outgoing>Flow_Available</bpmn:outgoing>
       <bpmn:outgoing>Flow_Unavailable</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-    <bpmn:task id="Task_Reserve" name="Atomically reserve technician and service bay">
+    <bpmn:task id="Task_Reserve" name="Lock vehicle and reserve technician and service bay">
       <bpmn:incoming>Flow_Available</bpmn:incoming>
       <bpmn:outgoing>Flow_6</bpmn:outgoing>
     </bpmn:task>

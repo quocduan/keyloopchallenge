@@ -59,9 +59,12 @@ public class BookingService {
                                                        LocalDateTime startsAt) {
         BookingInputs inputs = loadInputs(dealershipId, vehicleId, serviceTypeId, startsAt);
         LocalDateTime endsAt = startsAt.plusMinutes(inputs.serviceType().getDurationMinutes());
-        boolean available = findResourcePair(inputs.dealership(), inputs.serviceType(), startsAt, endsAt) != null;
+        boolean vehicleBooked = appointmentRepository.vehicleHasOverlap(inputs.vehicle().getId(), startsAt, endsAt);
+        boolean available = !vehicleBooked
+                && findResourcePair(inputs.dealership(), inputs.serviceType(), startsAt, endsAt) != null;
         return new ApiModels.AvailabilityResult(available, startsAt, endsAt,
-                available ? "A qualified technician and service bay are available."
+                vehicleBooked ? "Vehicle already has a confirmed appointment during the requested time."
+                        : available ? "A qualified technician and service bay are available."
                         : "No resource pair is available for the full service duration.");
     }
 
@@ -70,8 +73,15 @@ public class BookingService {
         // The dealership row lock serializes bookings for this dealership through this API.
         Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
-        BookingInputs inputs = loadInputs(dealership, request.vehicleId(), request.serviceTypeId(), request.desiredStart());
+        // Lock the vehicle too, so concurrent bookings for it serialize even across dealerships.
+        Vehicle vehicle = vehicleRepository.findByIdForUpdate(request.vehicleId())
+                .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
+        BookingInputs inputs = loadInputs(dealership, vehicle, request.serviceTypeId(), request.desiredStart());
         LocalDateTime endsAt = request.desiredStart().plusMinutes(inputs.serviceType().getDurationMinutes());
+        if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), request.desiredStart(), endsAt)) {
+            throw new BookingException(HttpStatus.CONFLICT,
+                    "Vehicle already has a confirmed appointment during the requested time.");
+        }
         ResourcePair pair = findResourcePair(dealership, inputs.serviceType(), request.desiredStart(), endsAt);
         if (pair == null) {
             throw new BookingException(HttpStatus.CONFLICT,
@@ -100,6 +110,10 @@ public class BookingService {
     private BookingInputs loadInputs(Dealership dealership, long vehicleId, long serviceTypeId, LocalDateTime startsAt) {
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
+        return loadInputs(dealership, vehicle, serviceTypeId, startsAt);
+    }
+
+    private BookingInputs loadInputs(Dealership dealership, Vehicle vehicle, long serviceTypeId, LocalDateTime startsAt) {
         ServiceType serviceType = serviceTypeRepository.findById(serviceTypeId)
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Service type not found."));
         if (startsAt.isBefore(LocalDateTime.now())) {

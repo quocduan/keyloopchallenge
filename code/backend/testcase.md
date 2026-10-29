@@ -23,6 +23,7 @@ Checkboxes track whether automated test code exists; they do not indicate that t
 - [x] An appointment starting exactly at the requested end does not count as an overlap.
 - [x] Partial, enclosing, and enclosed time overlaps count as conflicts.
 - [x] Appointments with a non-`CONFIRMED` status do not block availability.
+- [x] An overlapping confirmed appointment for the same vehicle makes availability false, even if another technician and bay are free.
 
 ## Booking
 
@@ -34,8 +35,12 @@ Checkboxes track whether automated test code exists; they do not indicate that t
 - [x] Unknown vehicle returns 404.
 - [x] Unknown service type returns 404.
 - [x] A past start time returns 400.
+- [x] Booking the same vehicle for an overlapping appointment returns 409, even for a different service, and does not insert a second appointment.
+- [x] Booking the same vehicle in a non-overlapping interval remains allowed.
 - [x] An insert failure leaves no partial booking.
 - [x] Concurrent requests for the same limited resources do not both reserve the same interval.
+- [x] Concurrent requests for the same vehicle do not both book overlapping intervals when multiple resource pairs are available.
+- [x] Concurrent requests for the same vehicle at different dealerships do not both book overlapping intervals.
 
 ## Appointment retrieval
 

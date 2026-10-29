@@ -99,37 +99,48 @@ class BackendApiIntegrationTest {
 
     @Test
     void availabilityUsesAnotherTechnicianWhenFirstIsBusy() throws Exception {
-        insertAppointment(1, 2, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 1, 2, START, START.plusMinutes(60), "CONFIRMED");
         assertAvailability(true);
     }
 
     @Test
     void availabilityUsesAnotherBayWhenFirstIsBusy() throws Exception {
-        insertAppointment(2, 1, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 2, 1, START, START.plusMinutes(60), "CONFIRMED");
         assertAvailability(true);
     }
 
     @Test
     void availabilityReturnsFalseWhenAllTechniciansAreBusy() throws Exception {
-        insertAppointment(1, 1, START, START.plusMinutes(60), "CONFIRMED");
-        insertAppointment(2, 2, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 1, 1, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 2, 2, START, START.plusMinutes(60), "CONFIRMED");
         assertAvailability(false);
     }
 
     @Test
     void availabilityReturnsFalseWhenAllBaysAreBusy() throws Exception {
-        insertAppointment(1, 1, START, START.plusMinutes(60), "CONFIRMED");
-        insertAppointment(2, 2, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 1, 1, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 2, 2, START, START.plusMinutes(60), "CONFIRMED");
         assertAvailability(false);
     }
 
     @Test
+    void availabilityRejectsVehicleOverlapEvenWhenOtherResourcesAreFree() throws Exception {
+        insertAppointment(1, 1, START, START.plusMinutes(60), "CONFIRMED");
+
+        mvc.perform(availabilityRequest(START))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.available").value(false))
+                .andExpect(jsonPath("$.message").value(
+                        "Vehicle already has a confirmed appointment during the requested time."));
+    }
+
+    @Test
     void availabilityTreatsAdjacentAppointmentsAsNonOverlapping() throws Exception {
-        insertAppointment(1, 1, START.minusHours(1), START, "CONFIRMED");
+        insertAppointment(2L, 1, 1, START.minusHours(1), START, "CONFIRMED");
         assertAvailability(true);
 
         seedDatabase();
-        insertAppointment(1, 1, START.plusMinutes(60), START.plusMinutes(120), "CONFIRMED");
+        insertAppointment(2L, 1, 1, START.plusMinutes(60), START.plusMinutes(120), "CONFIRMED");
         assertAvailability(true);
     }
 
@@ -139,7 +150,7 @@ class BackendApiIntegrationTest {
                                                                  LocalDateTime existingEnd) throws Exception {
         jdbc.update("DELETE FROM technician WHERE id=2");
         jdbc.update("DELETE FROM service_bay WHERE id=2");
-        insertAppointment(1, 1, existingStart, existingEnd, "CONFIRMED");
+        insertAppointment(2L, 1, 1, existingStart, existingEnd, "CONFIRMED");
         assertAvailability(false);
     }
 
@@ -206,13 +217,33 @@ class BackendApiIntegrationTest {
     void bookingWithoutAFreeResourcePairReturnsConflictAndDoesNotInsert() throws Exception {
         jdbc.update("DELETE FROM technician WHERE id=2");
         jdbc.update("DELETE FROM service_bay WHERE id=2");
-        insertAppointment(1, 1, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 1, 1, START, START.plusMinutes(60), "CONFIRMED");
 
         mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value(
                         "No qualified technician and service bay are both available for the full service duration."));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void bookingSameVehicleForAnOverlappingServiceReturnsConflictEvenWhenResourcesAreFree() throws Exception {
+        insertAppointment(1, 1, START, START.plusMinutes(60), "CONFIRMED");
+
+        mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, 2L, START))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        "Vehicle already has a confirmed appointment during the requested time."));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void bookingSameVehicleForNonOverlappingTimeRemainsAllowed() throws Exception {
+        insertAppointment(1, 1, START.minusHours(1), START, "CONFIRMED");
+
+        mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(2);
     }
 
     @Test
@@ -326,10 +357,46 @@ class BackendApiIntegrationTest {
         }
     }
 
+    @Test
+    void simultaneousBookingsForSameVehicleProduceOneBookingAndOneConflict() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<Integer> first = executor.submit(() -> bookConcurrently(ready, start));
+            Future<Integer> second = executor.submit(() -> bookConcurrently(ready, start));
+            if (!ready.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking workers did not become ready");
+            start.countDown();
+            List<Integer> outcomes = List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS));
+            assertThat(outcomes.stream().filter(status -> status == 201).count()).isEqualTo(1);
+            assertThat(outcomes.stream().filter(status -> status == 409).count()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void simultaneousBookingsForSameVehicleAcrossDealershipsProduceOneBookingAndOneConflict() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<Integer> first = executor.submit(() -> bookConcurrently(DEALER_ID, ready, start));
+            Future<Integer> second = executor.submit(() -> bookConcurrently(2L, ready, start));
+            if (!ready.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking workers did not become ready");
+            start.countDown();
+            List<Integer> outcomes = List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS));
+            assertThat(outcomes.stream().filter(status -> status == 201).count()).isEqualTo(1);
+            assertThat(outcomes.stream().filter(status -> status == 409).count()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+        }
+    }
+
     private int bookConcurrently(CountDownLatch ready, CountDownLatch start) throws Exception {
+        return bookConcurrently(DEALER_ID, ready, start);
+    }
+
+    private int bookConcurrently(long dealershipId, CountDownLatch ready, CountDownLatch start) throws Exception {
         ready.countDown();
         if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking start was not released");
-        return mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+        return mvc.perform(bookingRequest(dealershipId, VEHICLE_ID, SERVICE_ID, START))
                 .andReturn().getResponse().getStatus();
     }
 
@@ -361,9 +428,14 @@ class BackendApiIntegrationTest {
 
     private void insertAppointment(long technicianId, long bayId, LocalDateTime start,
                                    LocalDateTime end, String status) {
+        insertAppointment(VEHICLE_ID, technicianId, bayId, start, end, status);
+    }
+
+    private void insertAppointment(long vehicleId, long technicianId, long bayId, LocalDateTime start,
+                                   LocalDateTime end, String status) {
         jdbc.update("INSERT INTO appointment(dealership_id,vehicle_id,service_type_id,technician_id," +
                         "service_bay_id,starts_at,ends_at,status) VALUES (?,?,?,?,?,?,?,?)",
-                DEALER_ID, VEHICLE_ID, SERVICE_ID, technicianId, bayId, start, end, status);
+                DEALER_ID, vehicleId, SERVICE_ID, technicianId, bayId, start, end, status);
     }
 
     private long jsonLong(String json, String field) throws Exception {
