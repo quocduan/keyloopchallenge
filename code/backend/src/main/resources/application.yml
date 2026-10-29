@@ -9,6 +9,10 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD:scheduler}
   flyway:
     enabled: true
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
   jackson:
     default-property-inclusion: non_null
 management:

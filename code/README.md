@@ -1,6 +1,6 @@
 # Unified Service Scheduler
 
-Scenario A starter with a Spring Boot REST API, MySQL persistence, OpenAPI/Swagger UI, and a Vue 3 booking page.
+Scenario A starter with a Spring Boot REST API, Spring Data JPA/Hibernate persistence, MySQL, OpenAPI/Swagger UI, and a Vue 3 booking page.
 
 ## Requirements
 
@@ -52,6 +52,6 @@ The frontend dev server proxies `/api` requests to `http://localhost:8080`.
 - `POST /api/appointments` — reserves a qualified technician and bay and creates an appointment.
 - `GET /api/appointments/{id}` — retrieves an appointment.
 
-Booking requests lock the dealership row inside a MySQL transaction, check both resources for overlap across the complete service duration, then persist the appointment. This serializes bookings made through this API per dealership. If appointments can be written by other systems, replace this with a shared reservation/locking strategy.
+The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests lock the dealership row with a pessimistic JPA lock inside a MySQL transaction, check both resources for overlap across the complete service duration, then persist the appointment. This serializes bookings made through this API per dealership. If appointments can be written by other systems, replace this with a shared reservation/locking strategy.
 
 All sample data is for local development only. Authentication, authorization, timezone policy, cancellation, rescheduling, and production deployment configuration are not included in this starter.

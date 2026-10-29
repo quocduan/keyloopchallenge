@@ -4,7 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-    
+
         {
             "type": "java",
             "name": "Current File",
@@ -17,6 +17,13 @@
             "request": "launch",
             "mainClass": "com.keyloop.scheduler.SchedulerApplication",
             "projectName": "scheduler"
+        },
+        {
+            "type": "node-terminal",
+            "request": "launch",
+            "name": "Run backend tests",
+            "command": "mvn test",
+            // "cwd": "${workspaceFolder}/code/backend"
         }
     ]
 }
