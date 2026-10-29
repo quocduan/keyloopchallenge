@@ -1,0 +1,11 @@
+<configuration>
+  <springProperty scope="context" name="service" source="spring.application.name" defaultValue="scheduler"/>
+  <springProperty scope="context" name="environment" source="app.environment" defaultValue="local"/>
+  <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <includeMdc>true</includeMdc>
+      <customFields>{"service":"${service}","environment":"${environment}"}</customFields>
+    </encoder>
+  </appender>
+  <root level="INFO"><appender-ref ref="JSON_CONSOLE"/></root>
+</configuration>
