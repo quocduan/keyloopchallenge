@@ -16,10 +16,16 @@ import com.keyloop.scheduler.repository.ServiceTypeRepository;
 import com.keyloop.scheduler.repository.TechnicianRepository;
 import com.keyloop.scheduler.repository.VehicleRepository;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.integration.support.locks.LockRegistry;
 
 @Service
 public class BookingService {
@@ -29,19 +35,22 @@ public class BookingService {
     private final TechnicianRepository technicianRepository;
     private final ServiceBayRepository serviceBayRepository;
     private final AppointmentRepository appointmentRepository;
+    private final LockRegistry bookingLockRegistry;
 
     public BookingService(DealershipRepository dealershipRepository,
                           VehicleRepository vehicleRepository,
                           ServiceTypeRepository serviceTypeRepository,
                           TechnicianRepository technicianRepository,
                           ServiceBayRepository serviceBayRepository,
-                          AppointmentRepository appointmentRepository) {
+                          AppointmentRepository appointmentRepository,
+                          LockRegistry bookingLockRegistry) {
         this.dealershipRepository = dealershipRepository;
         this.vehicleRepository = vehicleRepository;
         this.serviceTypeRepository = serviceTypeRepository;
         this.technicianRepository = technicianRepository;
         this.serviceBayRepository = serviceBayRepository;
         this.appointmentRepository = appointmentRepository;
+        this.bookingLockRegistry = bookingLockRegistry;
     }
 
     @Transactional(readOnly = true)
@@ -72,6 +81,7 @@ public class BookingService {
 
     @Transactional
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
+        acquireBookingLocks(request);
         // The dealership row lock serializes bookings for this dealership through this API.
         Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
@@ -95,6 +105,46 @@ public class BookingService {
                 dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
                 request.desiredStart(), endsAt));
         return toView(appointment);
+    }
+
+    private void acquireBookingLocks(BookingRequests.AppointmentRequest request) {
+        List<String> keys = new ArrayList<>(List.of(
+                "dealership:" + request.dealershipId(), "vehicle:" + request.vehicleId()));
+        keys.sort(String::compareTo);
+
+        List<Lock> acquired = new ArrayList<>();
+        try {
+            for (String key : keys) {
+                Lock lock = bookingLockRegistry.obtain(key);
+                if (!lock.tryLock(10, TimeUnit.SECONDS)) {
+                    throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
+                            "Booking is busy; please retry shortly.");
+                }
+                acquired.add(lock);
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            releaseLocks(acquired);
+            throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Booking lock wait was interrupted; please retry.");
+        } catch (RuntimeException ex) {
+            releaseLocks(acquired);
+            throw ex;
+        }
+
+        // Keep distributed locks until the database transaction commits or rolls back.
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                releaseLocks(acquired);
+            }
+        });
+    }
+
+    private void releaseLocks(List<Lock> locks) {
+        for (int i = locks.size() - 1; i >= 0; i--) {
+            locks.get(i).unlock();
+        }
     }
 
     @Transactional(readOnly = true)

@@ -28,7 +28,7 @@ Flyway creates the schema and sample dealership, vehicle, service, technician, a
 
 ## Run services separately
 
-Start MySQL first (or use `docker compose up mysql`). Then:
+Start MySQL and the Redis Cluster first. From this directory, run `docker compose up mysql redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6 redis-cluster-init`. Then:
 
 ```sh
 cd backend
@@ -66,6 +66,6 @@ Use the URL and credentials configured for your local MySQL instance if they dif
 - `POST /api/appointments` — reserves a qualified technician and bay and creates an appointment.
 - `GET /api/appointments/{id}` — retrieves an appointment.
 
-The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests lock the dealership row with a pessimistic JPA lock inside a MySQL transaction, check both resources for overlap across the complete service duration, then persist the appointment. This serializes bookings made through this API per dealership. If appointments can be written by other systems, replace this with a shared reservation/locking strategy.
+The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests first acquire shared Redis locks for the dealership and vehicle through Spring Integration's `RedisLockRegistry`, then use pessimistic MySQL row locks in a transaction, check resource overlap across the complete service duration, and persist the appointment. The Redis locks coordinate backend instances; the database locks remain the final protection for the booking data. The local Compose setup starts a six-node Redis Cluster (three primaries and three replicas) and initializes it before the backend starts.
 
 All sample data is for local development only. Authentication, authorization, timezone policy, cancellation, rescheduling, and production deployment configuration are not included in this starter.

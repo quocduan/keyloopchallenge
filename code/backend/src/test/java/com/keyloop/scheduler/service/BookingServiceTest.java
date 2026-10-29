@@ -31,7 +31,8 @@ class BookingServiceTest {
         vehicleRepository = mock(VehicleRepository.class);
         serviceTypeRepository = mock(ServiceTypeRepository.class);
         service = new BookingService(dealershipRepository, vehicleRepository, serviceTypeRepository,
-                mock(TechnicianRepository.class), mock(ServiceBayRepository.class), mock(AppointmentRepository.class));
+                mock(TechnicianRepository.class), mock(ServiceBayRepository.class), mock(AppointmentRepository.class),
+                mock(org.springframework.integration.support.locks.LockRegistry.class));
     }
 
     @Test

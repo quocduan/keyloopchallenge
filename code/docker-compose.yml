@@ -16,17 +16,73 @@ services:
       timeout: 3s
       retries: 20
 
+  redis-node-1: &redis-node
+    image: redis:7.4-alpine
+    command: ["redis-server", "--port", "6379", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "yes"]
+    volumes:
+      - redis-node-1-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+  redis-node-2:
+    <<: *redis-node
+    volumes:
+      - redis-node-2-data:/data
+
+  redis-node-3:
+    <<: *redis-node
+    volumes:
+      - redis-node-3-data:/data
+
+  redis-node-4:
+    <<: *redis-node
+    volumes:
+      - redis-node-4-data:/data
+
+  redis-node-5:
+    <<: *redis-node
+    volumes:
+      - redis-node-5-data:/data
+
+  redis-node-6:
+    <<: *redis-node
+    volumes:
+      - redis-node-6-data:/data
+
+  redis-cluster-init:
+    image: redis:7.4-alpine
+    command: ["sh", "-c", "redis-cli -h redis-node-1 cluster info | grep -q 'cluster_state:ok' && exit 0; redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 redis-node-4:6379 redis-node-5:6379 redis-node-6:6379 --cluster-replicas 1 --cluster-yes"]
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+
   backend:
     build: ./backend
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/scheduler?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       SPRING_DATASOURCE_USERNAME: scheduler
       SPRING_DATASOURCE_PASSWORD: scheduler
+      SPRING_DATA_REDIS_CLUSTER_NODES: redis-node-1:6379,redis-node-2:6379,redis-node-3:6379,redis-node-4:6379,redis-node-5:6379,redis-node-6:6379
     ports:
       - "8080:8080"
     depends_on:
       mysql:
         condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
 
   frontend:
     build: ./frontend
@@ -39,3 +95,9 @@ services:
 
 volumes:
   mysql-data:
+  redis-node-1-data:
+  redis-node-2-data:
+  redis-node-3-data:
+  redis-node-4-data:
+  redis-node-5-data:
+  redis-node-6-data:

@@ -1,3 +1,7 @@
+scheduler:
+  # Tests use the existing database locking behavior without requiring a Redis cluster.
+  booking:
+    redis-locks-enabled: false
 spring:
   datasource:
     url: jdbc:h2:mem:scheduler-test;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000
