@@ -33,7 +33,8 @@ import com.zaxxer.hikari.HikariDataSource;
  * -Dperformance.requests=N and -Dperformance.sustainedSeconds=N as needed.
  * Latency and throughput are reported, not compared with invented SLA values.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "spring.datasource.url=jdbc:h2:mem:scheduler-performance;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000")
 @ActiveProfiles("test")
 @EnabledIfSystemProperty(named = "runPerformanceTests", matches = "true")
 class BackendPerformanceTest {
@@ -104,10 +105,12 @@ class BackendPerformanceTest {
     void bookingThroughputAcrossIndependentDealerships() throws Exception {
         int requests = requestCount();
         for (int id = 2; id <= requests; id++) {
+            int resourceId = id + 100;
             jdbc.update("INSERT INTO dealership(id,name) VALUES (?,?)", id, "Dealer " + id);
             jdbc.update("INSERT INTO technician(id,dealership_id,name,service_type_id) VALUES (?,?,?,1)",
-                    id, id, "Technician " + id);
-            jdbc.update("INSERT INTO service_bay(id,dealership_id,name) VALUES (?,?,?)", id, id, "Bay " + id);
+                    resourceId, id, "Technician " + id);
+            jdbc.update("INSERT INTO service_bay(id,dealership_id,name) VALUES (?,?,?)",
+                    resourceId, id, "Bay " + id);
         }
         List<Supplier<Integer>> tasks = IntStream.rangeClosed(1, requests)
                 .mapToObj(id -> request("POST", "/api/appointments", bookingBody(id, START.plusDays(id))))
