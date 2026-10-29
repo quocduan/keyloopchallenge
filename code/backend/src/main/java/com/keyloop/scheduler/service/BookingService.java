@@ -116,7 +116,7 @@ public class BookingService {
         } catch (BookingException ex) {
             if (ex.getStatus().is4xxClientError()) {
                 log.warn("booking_rejected", keyValue("dealershipId", request.dealershipId()),
-                        keyValue("outcome", ex.getStatus().isConflict() ? "conflict" : "rejected"),
+                        keyValue("outcome", ex.getStatus() == HttpStatus.CONFLICT ? "conflict" : "rejected"),
                         keyValue("status", ex.getStatus().value()));
             }
             throw ex;
