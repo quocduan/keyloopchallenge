@@ -3,7 +3,7 @@
 - [x] Add indexes to improve query performance.
   - [x] Add status-aware composite indexes for technician and service-bay appointment overlap checks.
 - [ ] Review whether entity graphs are needed alongside raw queries.
-- [ ] Implement locking in application code instead of relying on database-level locking.
+- [x] Implement locking in application code instead of relying on database-level locking.
 - [x] Implement the full test list.
   - [ ] check test coverage
   - [x] switch test code to using jpa+ hibernate

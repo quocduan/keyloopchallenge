@@ -26,9 +26,13 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.integration.support.locks.LockRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import static net.logstash.logback.argument.StructuredArguments.keyValue;
 
 @Service
 public class BookingService {
+    private static final Logger log = LoggerFactory.getLogger(BookingService.class);
     private final DealershipRepository dealershipRepository;
     private final VehicleRepository vehicleRepository;
     private final ServiceTypeRepository serviceTypeRepository;
@@ -81,6 +85,8 @@ public class BookingService {
 
     @Transactional
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
+        log.info("booking_attempt", keyValue("dealershipId", request.dealershipId()), keyValue("outcome", "attempted"));
+        try {
         acquireBookingLocks(request);
         // The dealership row lock serializes bookings for this dealership through this API.
         Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
@@ -104,7 +110,21 @@ public class BookingService {
         Appointment appointment = appointmentRepository.save(new Appointment(
                 dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
                 request.desiredStart(), endsAt));
+        log.info("booking_completed", keyValue("bookingId", appointment.getId()),
+                keyValue("dealershipId", dealership.getId()), keyValue("outcome", "success"));
         return toView(appointment);
+        } catch (BookingException ex) {
+            if (ex.getStatus().is4xxClientError()) {
+                log.warn("booking_rejected", keyValue("dealershipId", request.dealershipId()),
+                        keyValue("outcome", ex.getStatus().isConflict() ? "conflict" : "rejected"),
+                        keyValue("status", ex.getStatus().value()));
+            }
+            throw ex;
+        } catch (RuntimeException ex) {
+            log.error("booking_failed", keyValue("dealershipId", request.dealershipId()),
+                    keyValue("outcome", "error"), keyValue("errorType", ex.getClass().getSimpleName()), ex);
+            throw ex;
+        }
     }
 
     private void acquireBookingLocks(BookingRequests.AppointmentRequest request) {

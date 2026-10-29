@@ -20,6 +20,8 @@ spring:
       ddl-auto: validate
   jackson:
     default-property-inclusion: non_null
+app:
+  environment: ${APP_ENVIRONMENT:local}
 management:
   endpoints:
     web:
