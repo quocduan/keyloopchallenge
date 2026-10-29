@@ -3,6 +3,7 @@ package com.keyloop.scheduler.service;
 import com.keyloop.scheduler.api.ApiModels;
 import com.keyloop.scheduler.api.BookingRequests;
 import com.keyloop.scheduler.domain.Appointment;
+import com.keyloop.scheduler.domain.AppointmentStatus;
 import com.keyloop.scheduler.domain.Dealership;
 import com.keyloop.scheduler.domain.ServiceBay;
 import com.keyloop.scheduler.domain.ServiceType;
@@ -59,7 +60,8 @@ public class BookingService {
                                                        LocalDateTime startsAt) {
         BookingInputs inputs = loadInputs(dealershipId, vehicleId, serviceTypeId, startsAt);
         LocalDateTime endsAt = startsAt.plusMinutes(inputs.serviceType().getDurationMinutes());
-        boolean vehicleBooked = appointmentRepository.vehicleHasOverlap(inputs.vehicle().getId(), startsAt, endsAt);
+        boolean vehicleBooked = appointmentRepository.vehicleHasOverlap(inputs.vehicle().getId(),
+                AppointmentStatus.CONFIRMED, startsAt, endsAt);
         boolean available = !vehicleBooked
                 && findResourcePair(inputs.dealership(), inputs.serviceType(), startsAt, endsAt) != null;
         return new ApiModels.AvailabilityResult(available, startsAt, endsAt,
@@ -73,12 +75,13 @@ public class BookingService {
         // The dealership row lock serializes bookings for this dealership through this API.
         Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
-        // Lock the vehicle too, so concurrent bookings for it serialize even across dealerships.
+        // Locking the vehicle serializes its bookings even when requests target different dealerships.
         Vehicle vehicle = vehicleRepository.findByIdForUpdate(request.vehicleId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
         BookingInputs inputs = loadInputs(dealership, vehicle, request.serviceTypeId(), request.desiredStart());
         LocalDateTime endsAt = request.desiredStart().plusMinutes(inputs.serviceType().getDurationMinutes());
-        if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), request.desiredStart(), endsAt)) {
+        if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), AppointmentStatus.CONFIRMED,
+                request.desiredStart(), endsAt)) {
             throw new BookingException(HttpStatus.CONFLICT,
                     "Vehicle already has a confirmed appointment during the requested time.");
         }
@@ -128,9 +131,9 @@ public class BookingService {
                 .findAllByDealership_IdAndServiceType_IdOrderByIdAsc(dealership.getId(), serviceType.getId());
         List<ServiceBay> serviceBays = serviceBayRepository.findAllByDealership_IdOrderByIdAsc(dealership.getId());
         for (Technician technician : technicians) {
-            if (appointmentRepository.technicianHasOverlap(technician.getId(), startsAt, endsAt)) continue;
+            if (appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED, startsAt, endsAt)) continue;
             for (ServiceBay serviceBay : serviceBays) {
-                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), startsAt, endsAt)) {
+                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED, startsAt, endsAt)) {
                     return new ResourcePair(technician, serviceBay);
                 }
             }

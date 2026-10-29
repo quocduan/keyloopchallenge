@@ -45,13 +45,27 @@ npm run dev
 
 The frontend dev server proxies `/api` requests to `http://localhost:8080`.
 
+If a local MySQL Flyway migration fails, repair the schema history after correcting the migration, then restart with a clean build. For the default local database credentials:
+
+```sh
+cd backend
+mvn -Dflyway.url='jdbc:mysql://localhost:3306/scheduler?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC' \
+    -Dflyway.user=scheduler \
+    -Dflyway.password=scheduler \
+    -Dflyway.locations=filesystem:src/main/resources/db/migration \
+    flyway:repair
+mvn clean spring-boot:run
+```
+
+Use the URL and credentials configured for your local MySQL instance if they differ.
+
 ## API overview
 
 - `GET /api/reference-data` — dealerships, vehicles, and service types for the UI.
-- `GET /api/availability?dealershipId=1&vehicleId=1&serviceTypeId=1&desiredStart=2026-11-01T09:00:00` — checks vehicle, technician, and bay availability for the requested interval.
-- `POST /api/appointments` — reserves a qualified technician and bay and creates an appointment; a vehicle cannot have overlapping confirmed appointments.
+- `GET /api/availability?dealershipId=1&vehicleId=1&serviceTypeId=1&desiredStart=2026-11-01T09:00:00` — checks the requested interval.
+- `POST /api/appointments` — reserves a qualified technician and bay and creates an appointment.
 - `GET /api/appointments/{id}` — retrieves an appointment.
 
-The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests lock the dealership and vehicle rows with pessimistic JPA locks inside a MySQL transaction, reject an overlapping confirmed appointment for that vehicle, check technician and bay availability for the full service duration, then persist the appointment. The vehicle lock prevents concurrent duplicate bookings even when requests target different dealerships. If appointments can be written by other systems, use a shared reservation strategy that all writers follow.
+The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests lock the dealership row with a pessimistic JPA lock inside a MySQL transaction, check both resources for overlap across the complete service duration, then persist the appointment. This serializes bookings made through this API per dealership. If appointments can be written by other systems, replace this with a shared reservation/locking strategy.
 
 All sample data is for local development only. Authentication, authorization, timezone policy, cancellation, rescheduling, and production deployment configuration are not included in this starter.

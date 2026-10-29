@@ -44,4 +44,4 @@ CREATE TABLE appointment (
     CHECK (ends_at > starts_at)
 );
 
-CREATE INDEX idx_appointment_vehicle_time ON appointment(vehicle_id, starts_at, ends_at);
+CREATE INDEX idx_appointment_vehicle_time ON appointment(vehicle_id, status, starts_at, ends_at);

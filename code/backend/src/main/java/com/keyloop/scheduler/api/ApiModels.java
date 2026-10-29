@@ -1,5 +1,6 @@
 package com.keyloop.scheduler.api;
 
+import com.keyloop.scheduler.domain.AppointmentStatus;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -16,6 +17,6 @@ public final class ApiModels {
                                   long vehicleId, String vehicleLabel, long serviceTypeId,
                                   String serviceName, long technicianId, String technicianName,
                                   long serviceBayId, String serviceBayName,
-                                  LocalDateTime startsAt, LocalDateTime endsAt, String status) {}
+                                  LocalDateTime startsAt, LocalDateTime endsAt, AppointmentStatus status) {}
     public record ApiError(String message) {}
 }

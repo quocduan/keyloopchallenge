@@ -1,12 +1,13 @@
 # TODO
 
-- [ ] Add indexes to improve query performance.
+- [x] Add indexes to improve query performance.
+  - [x] Add status-aware composite indexes for technician and service-bay appointment overlap checks.
 - [ ] Review whether entity graphs are needed alongside raw queries.
 - [ ] Implement locking in application code instead of relying on database-level locking.
-- [ ] Implement the full test list.
+- [x] Implement the full test list.
   - [ ] check test coverage
-  - [ ] switch test code to using jpa+ hibernate
-- [ ] use test --> add more human covered testcases
+  - [x] switch test code to using jpa+ hibernate
+- [ ] user test --> add more human covered testcases
 - [ ] check whether Flyway is still working while using jpa+hibernate
 - [ ] Check any missing technologies in the code from the current selected technologies table
 - [ ] Create script for walkthrough video
@@ -14,3 +15,5 @@
   - [ ] verify code against the chosen technologies, assess/judge code and check what need to implement more ( index, lock, code style,...) and add them into todo.md file to about any missing
   
 - [ ] judge entire BE code for scalability, performance, reliability, maintainability, and observability.
+- [x] use enum for status/ or find other convenient structure
+
