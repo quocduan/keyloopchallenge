@@ -4,13 +4,11 @@ scheduler:
     redis-locks-enabled: false
 spring:
   datasource:
-    url: jdbc:h2:mem:scheduler-test;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+    url: ${TEST_MYSQL_URL:jdbc:mysql://localhost:3306/scheduler_test?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=LOCAL}
+    username: ${TEST_MYSQL_USERNAME:scheduler}
+    password: ${TEST_MYSQL_PASSWORD:scheduler}
   flyway:
-    enabled: false
+    enabled: true
   sql:
     init:
-      mode: always
-      schema-locations: classpath:test-schema.sql
+      mode: never

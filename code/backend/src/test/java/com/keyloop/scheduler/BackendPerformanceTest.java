@@ -33,8 +33,7 @@ import com.zaxxer.hikari.HikariDataSource;
  * -Dperformance.requests=N and -Dperformance.sustainedSeconds=N as needed.
  * Latency and throughput are reported, not compared with invented SLA values.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "spring.datasource.url=jdbc:h2:mem:scheduler-performance;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 @EnabledIfSystemProperty(named = "runPerformanceTests", matches = "true")
 class BackendPerformanceTest {
@@ -152,8 +151,9 @@ class BackendPerformanceTest {
                 default -> request("POST", "/api/appointments", bookingBody(1, START.plusDays(i + 1L)));
             });
         }
+        // Concurrent POSTs share one vehicle; NOWAIT reports lock contention as a retryable 409.
         Measurement measurement = run("mixed-reference-availability-booking-retrieval", tasks,
-                Math.min(12, requests), status -> status == 200 || status == 201);
+                Math.min(12, requests), status -> status == 200 || status == 201 || status == 409);
         assertThat(measurement.unexpectedStatuses()).isZero();
     }
 

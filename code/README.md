@@ -45,6 +45,10 @@ npm run dev
 
 The frontend dev server proxies `/api` requests to `http://localhost:8080`.
 
+## Backend tests
+
+Run the backend suite with `cd backend && mvn test`. Integration and opt-in performance tests use a dedicated MySQL database named `scheduler_test`; create it before running tests and grant the configured test user permission to create/drop tables and triggers. Set `TEST_MYSQL_URL`, `TEST_MYSQL_USERNAME`, and `TEST_MYSQL_PASSWORD` to point to another MySQL test database. The performance suite is opt-in: add `-DrunPerformanceTests=true` and configure its `performance.*` properties as needed. Do not point these tests at a database containing data you need; the suites delete and reseed their tables.
+
 If a local MySQL Flyway migration fails, repair the schema history after correcting the migration, then restart with a clean build. For the default local database credentials:
 
 ```sh
@@ -67,7 +71,7 @@ Use the URL and credentials configured for your local MySQL instance if they dif
 - `GET /api/appointments/idempotency-result` — polls an appointment request using its `Idempotency-Key` header.
 - `GET /api/appointments/{id}` — retrieves an appointment.
 
-The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests first acquire shared Redis locks for the dealership and vehicle through Spring Integration's `RedisLockRegistry`, then use pessimistic MySQL row locks in a transaction, check resource overlap across the complete service duration, and persist the appointment. The Redis locks coordinate backend instances; the database locks remain the final protection for the booking data. The local Compose setup starts a six-node Redis Cluster (three primaries and three replicas) and initializes it before the backend starts.
+The backend maps dealerships, vehicles, service types, technicians, service bays, and appointments with JPA entities and Spring Data repositories. Booking requests acquire the vehicle row with `NOWAIT`, then scan technician and bay rows with `SKIP LOCKED`; they recheck interval overlaps while holding the selected row locks and persist the appointment. Requests competing for a locked vehicle fail immediately with `409`, while a booking can skip locked technician or bay candidates and try another pair. `READ COMMITTED` ensures overlap rechecks see appointments committed after candidate discovery. Redis coordinates in-flight idempotency keys across backend instances; database row locks protect resource allocation. The local Compose setup starts a six-node Redis Cluster (three primaries and three replicas) and initializes it before the backend starts.
 
 Appointment creation accepts an optional `Idempotency-Key` header (1–128 visible ASCII characters). Clients should reuse the same key when retrying a request: the API returns the original appointment for an identical request, and responds with `409 Conflict` if the key is reused with a different payload. Keys are stored uniquely with appointments and are retained for the lifetime of the appointment record. Requests without the header keep the original booking behavior.
 

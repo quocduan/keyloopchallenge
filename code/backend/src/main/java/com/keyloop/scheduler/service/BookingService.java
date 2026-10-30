@@ -19,18 +19,20 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import org.springframework.http.HttpStatus;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.integration.support.locks.LockRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,17 +96,17 @@ public class BookingService {
                         : "No resource pair is available for the full service duration.");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
         return book(request, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey) {
         return book(request, idempotencyKey, false);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey,
                                           boolean manualDelay) {
         if (idempotencyKey != null && !idempotencyKey.matches("[\\x21-\\x7E]{1,128}")) {
@@ -116,7 +118,7 @@ public class BookingService {
         String outcome = "success";
         log.info("booking_attempt", keyValue("dealershipId", request.dealershipId()), keyValue("outcome", "attempted"));
         try {
-        acquireBookingLocks(request, idempotencyKey);
+        acquireIdempotencyLock(idempotencyKey);
         if (manualDelay && manualTestDelayEnabled) {
             try {
                 Thread.sleep(15_000L);
@@ -138,12 +140,17 @@ public class BookingService {
             }
         }
 
-        // The dealership row lock serializes bookings for this dealership through this API.
-        Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
+        Dealership dealership = dealershipRepository.findById(request.dealershipId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
-        // Locking the vehicle serializes its bookings even when requests target different dealerships.
-        Vehicle vehicle = vehicleRepository.findByIdForUpdate(request.vehicleId())
-                .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
+        // Vehicle and resource row locks serialize only requests that compete for the same records.
+        Vehicle vehicle;
+        try {
+            vehicle = vehicleRepository.findByIdForUpdateNowait(request.vehicleId())
+                    .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
+        } catch (PessimisticLockingFailureException ex) {
+            throw new BookingException(HttpStatus.CONFLICT,
+                    "This vehicle is being booked concurrently; retry the request.");
+        }
         BookingInputs inputs = loadInputs(dealership, vehicle, request.serviceTypeId(), request.desiredStart());
         LocalDateTime endsAt = request.desiredStart().plusMinutes(inputs.serviceType().getDurationMinutes());
         if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), AppointmentStatus.CONFIRMED,
@@ -151,10 +158,22 @@ public class BookingService {
             throw new BookingException(HttpStatus.CONFLICT,
                     "Vehicle already has a confirmed appointment during the requested time.");
         }
-        ResourcePair pair = findResourcePair(dealership, inputs.serviceType(), request.desiredStart(), endsAt);
+        ResourcePair pair = findResourcePairSkipLocked(dealership, inputs.serviceType(),
+                request.desiredStart(), endsAt);
         if (pair == null) {
             throw new BookingException(HttpStatus.CONFLICT,
                     "No qualified technician and service bay are both available for the full service duration.");
+        }
+
+        // SKIP LOCKED acquired both rows before returning the pair; verify current appointment data under those locks.
+        if (appointmentRepository.technicianHasOverlap(pair.technician().getId(), AppointmentStatus.CONFIRMED,
+                request.desiredStart(), endsAt)
+                || appointmentRepository.serviceBayHasOverlap(pair.serviceBay().getId(), AppointmentStatus.CONFIRMED,
+                request.desiredStart(), endsAt)) {
+            // A committed booking may have appeared between the availability read and row lock.
+            // The locks cannot be released before transaction completion, so fail fast for a client retry.
+            throw new BookingException(HttpStatus.CONFLICT,
+                    "The selected resources were just booked; retry the booking.");
         }
 
         Appointment appointment = appointmentRepository.save(new Appointment(
@@ -219,46 +238,20 @@ public class BookingService {
         }
     }
 
-    private void acquireBookingLocks(BookingRequests.AppointmentRequest request, String idempotencyKey) {
-        List<String> resourceKeys = new ArrayList<>(List.of(
-                "dealership:" + request.dealershipId(), "vehicle:" + request.vehicleId()));
-        resourceKeys.sort(String::compareTo);
-        List<String> keys = new ArrayList<>();
-        if (idempotencyKey != null) keys.add("idempotency:" + fingerprintKey(idempotencyKey));
-        keys.addAll(resourceKeys);
-
-        List<Lock> acquired = new ArrayList<>();
-        try {
-            for (String key : keys) {
-                Lock lock = bookingLockRegistry.obtain(key);
-                boolean acquiredLock = key.startsWith("idempotency:")
-                        ? lock.tryLock() : lock.tryLock(10, TimeUnit.SECONDS);
-                if (!acquiredLock) {
-                    if (key.startsWith("idempotency:")) {
-                        throw new BookingException(HttpStatus.ACCEPTED,
-                                "The request is being processed. Poll GET /api/appointments/idempotency-result " +
-                                        "with the same Idempotency-Key.");
-                    }
-                    throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
-                            "Booking is busy; please retry shortly.");
-                }
-                acquired.add(lock);
-            }
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            releaseLocks(acquired);
-            throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "Booking lock wait was interrupted; please retry.");
-        } catch (RuntimeException ex) {
-            releaseLocks(acquired);
-            throw ex;
+    private void acquireIdempotencyLock(String idempotencyKey) {
+        if (idempotencyKey == null) return;
+        Lock lock = bookingLockRegistry.obtain("idempotency:" + fingerprintKey(idempotencyKey));
+        if (!lock.tryLock()) {
+            throw new BookingException(HttpStatus.ACCEPTED,
+                    "The request is being processed. Poll GET /api/appointments/idempotency-result " +
+                            "with the same Idempotency-Key.");
         }
 
-        // Keep distributed locks until the database transaction commits or rolls back.
+        // Keep the idempotency lock until the database transaction commits or rolls back.
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCompletion(int status) {
-                releaseLocks(acquired);
+                lock.unlock();
             }
         });
     }
@@ -269,12 +262,6 @@ public class BookingService {
                     .digest(key.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable.", ex);
-        }
-    }
-
-    private void releaseLocks(List<Lock> locks) {
-        for (int i = locks.size() - 1; i >= 0; i--) {
-            locks.get(i).unlock();
         }
     }
 
@@ -320,6 +307,35 @@ public class BookingService {
             }
         }
         return null;
+    }
+
+    private ResourcePair findResourcePairSkipLocked(Dealership dealership, ServiceType serviceType,
+                                                     LocalDateTime startsAt, LocalDateTime endsAt) {
+        long technicianCursor = 0;
+        while (true) {
+            List<Technician> technicianCandidates = technicianRepository.findCandidatesByDealershipAndServiceTypeAfterId(
+                    dealership.getId(), serviceType.getId(), technicianCursor, PageRequest.of(0, 1));
+            Technician technician = technicianCandidates.isEmpty() ? null : technicianCandidates.get(0);
+            if (technician == null) return null;
+            technicianCursor = technician.getId();
+
+            if (appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED,
+                    startsAt, endsAt)) continue;
+
+            long bayCursor = 0;
+            while (true) {
+                List<ServiceBay> bayCandidates = serviceBayRepository.findCandidatesByDealershipAfterId(
+                        dealership.getId(), bayCursor, PageRequest.of(0, 1));
+                ServiceBay serviceBay = bayCandidates.isEmpty() ? null : bayCandidates.get(0);
+                if (serviceBay == null) break;
+                bayCursor = serviceBay.getId();
+
+                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED,
+                        startsAt, endsAt)) {
+                    return new ResourcePair(technician, serviceBay);
+                }
+            }
+        }
     }
 
     private ApiModels.AppointmentView toView(Appointment appointment) {

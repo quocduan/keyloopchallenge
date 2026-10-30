@@ -26,3 +26,7 @@
   - ex: process for idempotency key
 - redis cluster advertise internal ip address ==> can not join the debug run from host. ==> has to run in docker
 - manual test for idempotency/ concurrency
+## note:
+- correct AI and direct it to do our decision.
+  - H2 test failed --> AI edited code to make test passed just only because of H2 limitation --> direct it change the test db H2 to Mysql
+  - reading the AI thinking steps to verify what AI understand about my command and how it shove the problems

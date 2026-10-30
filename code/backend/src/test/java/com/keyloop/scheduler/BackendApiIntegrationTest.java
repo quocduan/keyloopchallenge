@@ -1,16 +1,17 @@
 package com.keyloop.scheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.keyloop.scheduler.api.BookingRequests;
+import com.keyloop.scheduler.domain.Appointment;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -27,7 +28,11 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.integration.support.locks.LockRegistry;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -42,8 +47,10 @@ class BackendApiIntegrationTest {
 
     @Autowired private MockMvc mvc;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private com.keyloop.scheduler.service.BookingService bookingService;
     @Autowired private LockRegistry bookingLockRegistry;
+    @SpyBean private com.keyloop.scheduler.repository.AppointmentRepository appointmentRepository;
 
     @BeforeEach
     void seedDatabase() {
@@ -218,6 +225,101 @@ class BackendApiIntegrationTest {
     }
 
     @Test
+    void bookingSkipsLockedFirstTechnicianAndUsesNextCandidate() throws Exception {
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> holder = holdRowLock(executor, "technician", 1L, locked, release);
+            try {
+                assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+                TestResponse response = executor.submit(() -> performBooking(
+                        bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START)))
+                        .get(3, TimeUnit.SECONDS);
+
+                assertThat(response.status()).isEqualTo(201);
+                assertThat(jsonLong(response.body(), "technicianId")).isEqualTo(2L);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+            } finally {
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void bookingSkipsLockedFirstBayAndUsesNextCandidate() throws Exception {
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> holder = holdRowLock(executor, "service_bay", 1L, locked, release);
+            try {
+                assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+                TestResponse response = executor.submit(() -> performBooking(
+                        bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START)))
+                        .get(3, TimeUnit.SECONDS);
+
+                assertThat(response.status()).isEqualTo(201);
+                assertThat(jsonLong(response.body(), "serviceBayId")).isEqualTo(2L);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+            } finally {
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void bookingReturnsPromptConflictWhenEveryTechnicianIsLocked() throws Exception {
+        CountDownLatch locksAcquired = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
+            Future<?> firstHolder = holdRowLock(executor, "technician", 1L, locksAcquired, release);
+            Future<?> secondHolder = holdRowLock(executor, "technician", 2L, locksAcquired, release);
+            try {
+                assertThat(locksAcquired.await(5, TimeUnit.SECONDS)).isTrue();
+                TestResponse response = executor.submit(() -> performBooking(
+                        bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START)))
+                        .get(3, TimeUnit.SECONDS);
+
+                assertThat(response.status()).isEqualTo(409);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isZero();
+            } finally {
+                release.countDown();
+                firstHolder.get(5, TimeUnit.SECONDS);
+                secondHolder.get(5, TimeUnit.SECONDS);
+            }
+        }
+        mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void bookingUsesNowaitForVehicleRowLock() throws Exception {
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> holder = holdRowLock(executor, "vehicle", VEHICLE_ID, locked, release);
+            try {
+                assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+                TestResponse response = executor.submit(() -> performBooking(
+                        bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START)))
+                        .get(3, TimeUnit.SECONDS);
+
+                assertThat(response.status()).isEqualTo(409);
+                assertThat(response.body()).contains("vehicle is being booked concurrently");
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isZero();
+            } finally {
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+            }
+        }
+        mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
     void retryWithSameIdempotencyKeyAndPayloadReturnsOriginalAppointment() throws Exception {
         String key = "booking-retry-1";
         String first = mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
@@ -333,15 +435,11 @@ class BackendApiIntegrationTest {
 
     @Test
     void failedAppointmentInsertLeavesNoPartialBooking() {
-        jdbc.execute("CREATE TRIGGER fail_appointment_insert BEFORE INSERT ON appointment " +
-                "FOR EACH ROW CALL \"com.keyloop.scheduler.BackendApiIntegrationTest$FailAppointmentInsert\"");
-        try {
-            assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> bookingService.book(
-                    new BookingRequests.AppointmentRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))))
-                    .isNotNull();
-        } finally {
-            jdbc.execute("DROP TRIGGER fail_appointment_insert");
-        }
+        doThrow(new DataIntegrityViolationException("forced appointment insert failure"))
+                .when(appointmentRepository).save(any(Appointment.class));
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> bookingService.book(
+                new BookingRequests.AppointmentRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))))
+                .isInstanceOf(DataIntegrityViolationException.class);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isZero();
     }
 
@@ -478,6 +576,32 @@ class BackendApiIntegrationTest {
         return bookConcurrently(DEALER_ID, ready, start);
     }
 
+    private Future<?> holdRowLock(ExecutorService executor, String table, long id,
+                                  CountDownLatch locked, CountDownLatch release) throws Exception {
+        Future<?> holder = executor.submit(() -> new TransactionTemplate(transactionManager)
+                .executeWithoutResult(transactionStatus -> {
+                    jdbc.queryForObject("SELECT id FROM " + table + " WHERE id=? FOR UPDATE", Long.class, id);
+                    locked.countDown();
+                    try {
+                        if (!release.await(10, TimeUnit.SECONDS)) {
+                            throw new AssertionError("Test did not release the database row lock");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("Database row lock holder was interrupted", ex);
+                    }
+                }));
+        return holder;
+    }
+
+    private TestResponse performBooking(
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request) throws Exception {
+        var result = mvc.perform(request).andReturn();
+        return new TestResponse(result.getResponse().getStatus(), result.getResponse().getContentAsString());
+    }
+
+    private record TestResponse(int status, String body) {}
+
     private int bookConcurrentlyWithKey(CountDownLatch ready, CountDownLatch start, String key) throws Exception {
         ready.countDown();
         if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking start was not released");
@@ -549,17 +673,4 @@ class BackendApiIntegrationTest {
         return value.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss"));
     }
 
-    public static class FailAppointmentInsert implements org.h2.api.Trigger {
-        @Override
-        public void init(Connection connection, String schemaName, String triggerName, String tableName,
-                         boolean before, int type) {}
-
-        @Override
-        public void fire(Connection connection, Object[] oldRow, Object[] newRow) throws SQLException {
-            throw new SQLException("forced appointment insert failure");
-        }
-
-        @Override public void close() {}
-        @Override public void remove() {}
-    }
 }
