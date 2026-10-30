@@ -156,59 +156,59 @@ public class BookingService {
         String outcome = "success";
         log.info("booking_attempt", keyValue("dealershipId", request.dealershipId()), keyValue("outcome", "attempted"));
         try {
-        acquireIdempotencyLock(idempotencyKey);
-        if (manualDelay && manualTestDelayEnabled) {
-            try {
-                Thread.sleep(15_000L);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
-                        "The manual booking test delay was interrupted; please retry.");
-            }
-        }
-        if (idempotencyKey != null) {
-            var existing = appointmentRepository.findDetailedByIdempotencyKey(idempotencyKey);
-            if (existing.isPresent()) {
-                Appointment appointment = existing.get();
-                if (!requestFingerprint.equals(appointment.getRequestFingerprint())) {
-                    throw new BookingException(HttpStatus.CONFLICT,
-                            "Idempotency-Key was already used with a different request.");
+            acquireIdempotencyLock(idempotencyKey);
+            if (manualDelay && manualTestDelayEnabled) {
+                try {
+                    Thread.sleep(15_000L);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
+                            "The manual booking test delay was interrupted; please retry.");
                 }
-                return toView(appointment);
             }
-        }
+            if (idempotencyKey != null) {
+                var existing = appointmentRepository.findDetailedByIdempotencyKey(idempotencyKey);
+                if (existing.isPresent()) {
+                    Appointment appointment = existing.get();
+                    if (!requestFingerprint.equals(appointment.getRequestFingerprint())) {
+                        throw new BookingException(HttpStatus.CONFLICT,
+                                "Idempotency-Key was already used with a different request.");
+                    }
+                    return toView(appointment);
+                }
+            }
 
-        Dealership dealership = dealershipRepository.findById(request.dealershipId())
-                .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
-        // Vehicle and resource row locks serialize only requests that compete for the same records.
-        Vehicle vehicle;
-        try {
-            vehicle = vehicleRepository.findByIdForUpdateNowait(request.vehicleId())
-                    .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
-        } catch (PessimisticLockingFailureException ex) {
-            throw new BookingException(HttpStatus.CONFLICT,
-                    "This vehicle is being booked concurrently; retry the request.");
-        }
-        BookingInputs inputs = loadInputs(dealership, vehicle, request.serviceTypeId(), request.desiredStart());
-        LocalDateTime endsAt = request.desiredStart().plusMinutes(inputs.serviceType().getDurationMinutes());
-        if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), AppointmentStatus.CONFIRMED,
-                request.desiredStart(), endsAt)) {
-            throw new BookingException(HttpStatus.CONFLICT,
-                    "Vehicle already has a confirmed appointment during the requested time.");
-        }
-        ResourcePair pair = findResourcePairSkipLocked(dealership, inputs.serviceType(),
-                request.desiredStart(), endsAt);
-        if (pair == null) {
-            throw new BookingException(HttpStatus.CONFLICT,
-                    "No qualified technician and service bay are both available for the full service duration.");
-        }
+            Dealership dealership = dealershipRepository.findById(request.dealershipId())
+                    .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
+            // Vehicle and resource row locks serialize only requests that compete for the same records.
+            Vehicle vehicle;
+            try {
+                vehicle = vehicleRepository.findByIdForUpdateNowait(request.vehicleId())
+                        .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
+            } catch (PessimisticLockingFailureException ex) {
+                throw new BookingException(HttpStatus.CONFLICT,
+                        "This vehicle is being booked concurrently; retry the request.");
+            }
+            BookingInputs inputs = loadInputs(dealership, vehicle, request.serviceTypeId(), request.desiredStart());
+            LocalDateTime endsAt = request.desiredStart().plusMinutes(inputs.serviceType().getDurationMinutes());
+            if (appointmentRepository.vehicleHasOverlap(vehicle.getId(), AppointmentStatus.CONFIRMED,
+                    request.desiredStart(), endsAt)) {
+                throw new BookingException(HttpStatus.CONFLICT,
+                        "Vehicle already has a confirmed appointment during the requested time.");
+            }
+            ResourcePair pair = findResourcePairSkipLocked(dealership, inputs.serviceType(),
+                    request.desiredStart(), endsAt);
+            if (pair == null) {
+                throw new BookingException(HttpStatus.CONFLICT,
+                        "No qualified technician and service bay are both available for the full service duration.");
+            }
 
-        Appointment appointment = appointmentRepository.save(new Appointment(
-                dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
-                request.desiredStart(), endsAt, idempotencyKey, requestFingerprint));
-        log.info("booking_completed", keyValue("bookingId", appointment.getId()),
-                keyValue("dealershipId", dealership.getId()), keyValue("outcome", "success"));
-        return toView(appointment);
+            Appointment appointment = appointmentRepository.save(new Appointment(
+                    dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
+                    request.desiredStart(), endsAt, idempotencyKey, requestFingerprint));
+            log.info("booking_completed", keyValue("bookingId", appointment.getId()),
+                    keyValue("dealershipId", dealership.getId()), keyValue("outcome", "success"));
+            return toView(appointment);
         } catch (BookingException ex) {
             outcome = ex.getStatus() == HttpStatus.CONFLICT ? "conflict" : "rejected";
             if (ex.getStatus().is4xxClientError()) {

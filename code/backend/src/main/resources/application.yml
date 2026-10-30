@@ -36,6 +36,9 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
+scheduler:
+  booking:
+    redis-locks-enabled: false
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
