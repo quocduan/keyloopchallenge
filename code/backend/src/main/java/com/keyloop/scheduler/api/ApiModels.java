@@ -7,6 +7,7 @@ import java.util.List;
 public final class ApiModels {
     private ApiModels() {}
 
+    public record OptionPage<T>(List<T> items, int page, int size, boolean hasNext) {}
     public record NamedOption(long id, String name) {}
     public record ServiceOption(long id, String name, int durationMinutes) {}
     public record VehicleOption(long id, String vin, String label) {}

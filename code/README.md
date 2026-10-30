@@ -65,7 +65,8 @@ Use the URL and credentials configured for your local MySQL instance if they dif
 
 ## API overview
 
-- `GET /api/reference-data` — dealerships, vehicles, and service types for the UI.
+- `GET /api/reference-data` — the first 20 dealerships, vehicles, and service types (bounded initial options).
+- `GET /api/reference-data/{catalog}?q=&page=0&size=20` — search and page through `dealerships`, `vehicles`, or `service-types`. Returns `items`, `page`, `size`, and `hasNext`; pages start at zero, size is 1–100, page is 0–10000, and search is at most 100 characters. Vehicles match VIN, make, or model; other catalogs match name. Results have a stable ID tie-breaker. The booking form uses dropdowns with Previous/Next controls to page through these endpoints rather than loading entire catalogs.
 - `GET /api/availability?dealershipId=1&vehicleId=1&serviceTypeId=1&desiredStart=2026-11-01T09:00:00` — checks the requested interval.
 - `POST /api/appointments` — reserves a qualified technician and bay and creates an appointment.
 - `GET /api/appointments/idempotency-result` — polls an appointment request using its `Idempotency-Key` header.

@@ -13,9 +13,27 @@ public class BookingController {
     private final BookingService bookingService;
     public BookingController(BookingService bookingService) { this.bookingService = bookingService; }
 
-    @Operation(summary = "Get booking form reference data")
+    @Operation(summary = "Get the first 20 options from each booking catalog")
     @GetMapping("/reference-data")
     public ApiModels.ReferenceData referenceData() { return bookingService.referenceData(); }
+
+    @GetMapping("/reference-data/dealerships")
+    public ApiModels.OptionPage<ApiModels.NamedOption> dealerships(@RequestParam(defaultValue = "") String q,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return bookingService.dealershipOptions(q, page, size);
+    }
+
+    @GetMapping("/reference-data/vehicles")
+    public ApiModels.OptionPage<ApiModels.VehicleOption> vehicles(@RequestParam(defaultValue = "") String q,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return bookingService.vehicleOptions(q, page, size);
+    }
+
+    @GetMapping("/reference-data/service-types")
+    public ApiModels.OptionPage<ApiModels.ServiceOption> serviceTypes(@RequestParam(defaultValue = "") String q,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return bookingService.serviceOptions(q, page, size);
+    }
 
     @Operation(summary = "Check a requested interval for both required resources")
     @GetMapping("/availability")

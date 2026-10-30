@@ -72,13 +72,48 @@ public class BookingService {
 
     @Transactional(readOnly = true)
     public ApiModels.ReferenceData referenceData() {
-        var dealerships = dealershipRepository.findAllByOrderByNameAsc().stream()
-                .map(dealership -> new ApiModels.NamedOption(dealership.getId(), dealership.getName())).toList();
-        var vehicles = vehicleRepository.findAllByOrderByMakeAscModelAsc().stream()
-                .map(vehicle -> new ApiModels.VehicleOption(vehicle.getId(), vehicle.getVin(), vehicle.getLabel())).toList();
-        var serviceTypes = serviceTypeRepository.findAllByOrderByNameAsc().stream()
-                .map(service -> new ApiModels.ServiceOption(service.getId(), service.getName(), service.getDurationMinutes())).toList();
-        return new ApiModels.ReferenceData(dealerships, vehicles, serviceTypes);
+        return new ApiModels.ReferenceData(dealershipOptions("", 0, 20).items(),
+                vehicleOptions("", 0, 20).items(), serviceOptions("", 0, 20).items());
+    }
+
+    @Transactional(readOnly = true)
+    public ApiModels.OptionPage<ApiModels.NamedOption> dealershipOptions(String query, int page, int size) {
+        var result = dealershipRepository.findByNameContainingIgnoreCase(searchTerm(query),
+                optionPage(page, size, "name", "id"));
+        return new ApiModels.OptionPage<>(result.getContent().stream()
+                .map(d -> new ApiModels.NamedOption(d.getId(), d.getName())).toList(), page, size, result.hasNext());
+    }
+
+    @Transactional(readOnly = true)
+    public ApiModels.OptionPage<ApiModels.VehicleOption> vehicleOptions(String query, int page, int size) {
+        String term = searchTerm(query);
+        var result = vehicleRepository.findByVinContainingIgnoreCaseOrMakeContainingIgnoreCaseOrModelContainingIgnoreCase(
+                term, term, term, optionPage(page, size, "make", "model", "id"));
+        return new ApiModels.OptionPage<>(result.getContent().stream()
+                .map(v -> new ApiModels.VehicleOption(v.getId(), v.getVin(), v.getLabel())).toList(), page, size, result.hasNext());
+    }
+
+    @Transactional(readOnly = true)
+    public ApiModels.OptionPage<ApiModels.ServiceOption> serviceOptions(String query, int page, int size) {
+        var result = serviceTypeRepository.findByNameContainingIgnoreCase(searchTerm(query),
+                optionPage(page, size, "name", "id"));
+        return new ApiModels.OptionPage<>(result.getContent().stream()
+                .map(t -> new ApiModels.ServiceOption(t.getId(), t.getName(), t.getDurationMinutes())).toList(),
+                page, size, result.hasNext());
+    }
+
+    private PageRequest optionPage(int page, int size, String... sort) {
+        if (page < 0 || page > 10000 || size < 1 || size > 100) {
+            throw new BookingException(HttpStatus.BAD_REQUEST, "Page must be between 0 and 10000; size must be between 1 and 100.");
+        }
+        return PageRequest.of(page, size, org.springframework.data.domain.Sort.by(sort));
+    }
+
+    private String searchTerm(String query) {
+        if (query.length() > 100) {
+            throw new BookingException(HttpStatus.BAD_REQUEST, "Search must contain at most 100 characters.");
+        }
+        return query.trim();
     }
 
     @Transactional(readOnly = true)

@@ -1,37 +1,21 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import CatalogSelect from './components/CatalogSelect.vue'
 
-const reference = ref({ dealerships: [], vehicles: [], serviceTypes: [] })
+const selectedService = ref(null)
 const form = reactive({ dealershipId: '', vehicleId: '', serviceTypeId: '', desiredStart: '' })
-const status = ref('loading')
-const message = ref('Loading booking options…')
+const status = ref('ready')
+const message = ref('')
 const appointment = ref(null)
 const availability = ref(null)
 const busy = ref(false)
 const simulateDuplicate = ref(false)
 let idempotencyAttempt = null
 
-const selectedService = computed(() => reference.value.serviceTypes.find(x => x.id === Number(form.serviceTypeId)))
 const durationLabel = computed(() => {
   const minutes = selectedService.value?.durationMinutes ?? 0
   return minutes >= 60 ? `${Math.floor(minutes / 60)}${minutes % 60 ? `h ${minutes % 60}m` : 'h'}` : `${minutes} minutes`
 })
-
-async function loadReferenceData() {
-  try {
-    const response = await fetch('/api/reference-data')
-    if (!response.ok) throw new Error('Could not load booking options.')
-    reference.value = await response.json()
-    form.dealershipId = reference.value.dealerships[0]?.id ?? ''
-    form.vehicleId = reference.value.vehicles[0]?.id ?? ''
-    form.serviceTypeId = reference.value.serviceTypes[0]?.id ?? ''
-    status.value = 'ready'
-    message.value = ''
-  } catch (error) {
-    status.value = 'error'
-    message.value = `${error.message} Make sure the API and MySQL are running.`
-  }
-}
 
 function buildQuery() {
   const query = new URLSearchParams({
@@ -156,7 +140,6 @@ function formatDate(value) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
-onMounted(loadReferenceData)
 </script>
 
 <template>
@@ -176,29 +159,15 @@ onMounted(loadReferenceData)
       <section class="booking-card">
         <div class="card-heading"><div><span class="step-label">YOUR APPOINTMENT</span><h2>Service details</h2></div><span class="step-count">01 <i>/ 01</i></span></div>
         <form @submit.prevent="checkAvailability">
-          <label for="dealer">Dealership</label>
-          <select id="dealer" v-model="form.dealershipId" required :disabled="status === 'loading'">
-            <option value="" disabled>Select a dealership</option>
-            <option v-for="dealer in reference.dealerships" :key="dealer.id" :value="dealer.id">{{ dealer.name }}</option>
-          </select>
-
-          <label for="vehicle">Your vehicle</label>
-          <select id="vehicle" v-model="form.vehicleId" required>
-            <option value="" disabled>Select a vehicle</option>
-            <option v-for="vehicle in reference.vehicles" :key="vehicle.id" :value="vehicle.id">{{ vehicle.label }}</option>
-          </select>
-
-          <label for="service">Service required</label>
-          <select id="service" v-model="form.serviceTypeId" required>
-            <option value="" disabled>Select a service</option>
-            <option v-for="service in reference.serviceTypes" :key="service.id" :value="service.id">{{ service.name }}</option>
-          </select>
+          <CatalogSelect id="dealer" v-model="form.dealershipId" label="Dealership" catalog="dealerships" />
+          <CatalogSelect id="vehicle" v-model="form.vehicleId" label="Your vehicle" catalog="vehicles" />
+          <CatalogSelect id="service" v-model="form.serviceTypeId" label="Service required" catalog="service-types" @selected="selectedService = $event" />
           <div v-if="selectedService" class="field-hint">Estimated time: {{ durationLabel }}</div>
 
           <label for="date">Preferred date and time</label>
           <input id="date" v-model="form.desiredStart" type="datetime-local" required />
 
-          <button class="primary-button" type="submit" :disabled="busy || status === 'loading'">
+          <button class="primary-button" type="submit" :disabled="busy || !form.dealershipId || !form.vehicleId || !form.serviceTypeId">
             <span v-if="busy" class="spinner"></span>{{ busy ? (status === 'processing' ? 'Booking…' : 'Checking…') : 'Check availability' }} <span aria-hidden="true">→</span>
           </button>
           <label class="test-mode"><input v-model="simulateDuplicate" type="checkbox" /> <span>Simulate duplicate request (15-second manual test)</span></label>

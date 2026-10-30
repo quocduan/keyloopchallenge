@@ -92,6 +92,62 @@ class BackendApiIntegrationTest {
     }
 
     @Test
+    void referenceDataBoundsEveryCatalogAndPagesRemainAccessible() throws Exception {
+        for (int id = 3; id <= 25; id++) {
+            jdbc.update("INSERT INTO dealership(id,name) VALUES (?,?)", id, "Dealer " + id);
+            jdbc.update("INSERT INTO vehicle(id,vin,make,model,model_year) VALUES (?,?,?,?,?)",
+                    id, String.format("VIN%014d", id), "Make", "Model", 2025);
+            jdbc.update("INSERT INTO service_type(id,name,duration_minutes) VALUES (?,?,?)", id, "Service " + id, 30);
+        }
+        mvc.perform(get("/api/reference-data"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dealerships.length()").value(20))
+                .andExpect(jsonPath("$.vehicles.length()").value(20))
+                .andExpect(jsonPath("$.serviceTypes.length()").value(20));
+        for (String catalog : List.of("dealerships", "vehicles", "service-types")) {
+            mvc.perform(get("/api/reference-data/" + catalog))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.items.length()").value(20))
+                    .andExpect(jsonPath("$.hasNext").value(true));
+            mvc.perform(get("/api/reference-data/" + catalog).param("page", "1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.items.length()").value(5))
+                    .andExpect(jsonPath("$.hasNext").value(false));
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"dealerships,alpha,1", "service-types,quick,2", "vehicles,hOnDa,1",
+            "vehicles,accord,1", "vehicles,VIN00000000000002,2"})
+    void referenceCatalogsSupportCaseInsensitiveSearch(String catalog, String query, long expectedId) throws Exception {
+        mvc.perform(get("/api/reference-data/" + catalog).param("q", query).param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(expectedId))
+                .andExpect(jsonPath("$.hasNext").value(false));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"-1,20", "10001,20", "0,0", "0,101"})
+    void referenceCatalogsRejectUnboundedOrInvalidPages(int page, int size) throws Exception {
+        for (String catalog : List.of("dealerships", "vehicles", "service-types")) {
+            mvc.perform(get("/api/reference-data/" + catalog)
+                            .param("page", String.valueOf(page)).param("size", String.valueOf(size)))
+                    .andExpect(status().isBadRequest());
+        }
+    }
+
+    @Test
+    void referenceSearchHandlesNoMatchesAndRejectsOversizedQueries() throws Exception {
+        mvc.perform(get("/api/reference-data/vehicles").param("q", "does-not-exist"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(0))
+                .andExpect(jsonPath("$.hasNext").value(false));
+        mvc.perform(get("/api/reference-data/vehicles").param("q", "x".repeat(101)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void availabilityReturnsTrueAndCorrectEndTimeForFreeResources() throws Exception {
         mvc.perform(availabilityRequest(START))
                 .andExpect(status().isOk())
