@@ -23,6 +23,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.CsvSource;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,6 +53,7 @@ class BackendApiIntegrationTest {
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private com.keyloop.scheduler.service.BookingService bookingService;
     @Autowired private LockRegistry bookingLockRegistry;
+    @Autowired private EntityManagerFactory entityManagerFactory;
     @SpyBean private com.keyloop.scheduler.repository.AppointmentRepository appointmentRepository;
 
     @BeforeEach
@@ -132,6 +136,46 @@ class BackendApiIntegrationTest {
         insertAppointment(2L, 1, 1, START, START.plusMinutes(60), "CONFIRMED");
         insertAppointment(2L, 2, 2, START, START.plusMinutes(60), "CONFIRMED");
         assertAvailability(false);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void resourceSelectionQueryCountStaysBoundedWithManyBusyCandidates(boolean booking, boolean freePair)
+            throws Exception {
+        insertAppointment(2L, 1, 1, START, START.plusMinutes(60), "CONFIRMED");
+        insertAppointment(2L, 2, 2, START, START.plusMinutes(60), "CONFIRMED");
+        for (long id = 10; id < 50; id++) {
+            jdbc.update("INSERT INTO technician(id,dealership_id,name,service_type_id) VALUES (?,1,?,1)",
+                    id, "Technician " + id);
+            jdbc.update("INSERT INTO service_bay(id,dealership_id,name) VALUES (?,1,?)", id, "Bay " + id);
+            insertAppointment(2L, id, id, START, START.plusMinutes(60), "CONFIRMED");
+        }
+        // Many free technicians must not cause repeated scans of the same occupied bays.
+        for (long id = 50; id < 90; id++) {
+            jdbc.update("INSERT INTO technician(id,dealership_id,name,service_type_id) VALUES (?,1,?,1)",
+                    id, "Technician " + id);
+        }
+        if (freePair) {
+            jdbc.update("INSERT INTO service_bay(id,dealership_id,name) VALUES (100,1,'Free Bay')");
+        }
+
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        boolean statisticsEnabled = statistics.isStatisticsEnabled();
+        statistics.setStatisticsEnabled(true);
+        long before = statistics.getPrepareStatementCount();
+        try {
+            if (booking) {
+                mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+                        .andExpect(status().is(freePair ? 201 : 409));
+            } else {
+                assertAvailability(freePair);
+            }
+            assertThat(statistics.getPrepareStatementCount() - before)
+                    .as("SQL statements for resource selection must not grow with candidate count")
+                    .isLessThanOrEqualTo(10);
+        } finally {
+            statistics.setStatisticsEnabled(statisticsEnabled);
+        }
     }
 
     @Test

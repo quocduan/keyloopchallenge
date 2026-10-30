@@ -165,17 +165,6 @@ public class BookingService {
                     "No qualified technician and service bay are both available for the full service duration.");
         }
 
-        // SKIP LOCKED acquired both rows before returning the pair; verify current appointment data under those locks.
-        if (appointmentRepository.technicianHasOverlap(pair.technician().getId(), AppointmentStatus.CONFIRMED,
-                request.desiredStart(), endsAt)
-                || appointmentRepository.serviceBayHasOverlap(pair.serviceBay().getId(), AppointmentStatus.CONFIRMED,
-                request.desiredStart(), endsAt)) {
-            // A committed booking may have appeared between the availability read and row lock.
-            // The locks cannot be released before transaction completion, so fail fast for a client retry.
-            throw new BookingException(HttpStatus.CONFLICT,
-                    "The selected resources were just booked; retry the booking.");
-        }
-
         Appointment appointment = appointmentRepository.save(new Appointment(
                 dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
                 request.desiredStart(), endsAt, idempotencyKey, requestFingerprint));
@@ -295,45 +284,42 @@ public class BookingService {
 
     private ResourcePair findResourcePair(Dealership dealership, ServiceType serviceType,
                                           LocalDateTime startsAt, LocalDateTime endsAt) {
-        List<Technician> technicians = technicianRepository
-                .findAllByDealership_IdAndServiceType_IdOrderByIdAsc(dealership.getId(), serviceType.getId());
-        List<ServiceBay> serviceBays = serviceBayRepository.findAllByDealership_IdOrderByIdAsc(dealership.getId());
-        for (Technician technician : technicians) {
-            if (appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED, startsAt, endsAt)) continue;
-            for (ServiceBay serviceBay : serviceBays) {
-                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED, startsAt, endsAt)) {
-                    return new ResourcePair(technician, serviceBay);
-                }
-            }
-        }
-        return null;
+        List<Technician> technicians = technicianRepository.findAvailable(dealership.getId(), serviceType.getId(),
+                0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
+        if (technicians.isEmpty()) return null;
+        List<ServiceBay> serviceBays = serviceBayRepository.findAvailable(dealership.getId(),
+                0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
+        return serviceBays.isEmpty() ? null : new ResourcePair(technicians.get(0), serviceBays.get(0));
     }
 
     private ResourcePair findResourcePairSkipLocked(Dealership dealership, ServiceType serviceType,
                                                      LocalDateTime startsAt, LocalDateTime endsAt) {
         long technicianCursor = 0;
+        Technician technician;
         while (true) {
-            List<Technician> technicianCandidates = technicianRepository.findCandidatesByDealershipAndServiceTypeAfterId(
-                    dealership.getId(), serviceType.getId(), technicianCursor, PageRequest.of(0, 1));
-            Technician technician = technicianCandidates.isEmpty() ? null : technicianCandidates.get(0);
-            if (technician == null) return null;
+            List<Technician> technicianCandidates = technicianRepository.findAvailableForUpdateSkipLocked(
+                    dealership.getId(), serviceType.getId(), technicianCursor, AppointmentStatus.CONFIRMED,
+                    startsAt, endsAt, PageRequest.of(0, 1));
+            if (technicianCandidates.isEmpty()) return null;
+            technician = technicianCandidates.get(0);
             technicianCursor = technician.getId();
 
-            if (appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED,
-                    startsAt, endsAt)) continue;
+            // Recheck after locking in case another booking committed during candidate selection.
+            if (!appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED,
+                    startsAt, endsAt)) break;
+        }
 
-            long bayCursor = 0;
-            while (true) {
-                List<ServiceBay> bayCandidates = serviceBayRepository.findCandidatesByDealershipAfterId(
-                        dealership.getId(), bayCursor, PageRequest.of(0, 1));
-                ServiceBay serviceBay = bayCandidates.isEmpty() ? null : bayCandidates.get(0);
-                if (serviceBay == null) break;
-                bayCursor = serviceBay.getId();
-
-                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED,
-                        startsAt, endsAt)) {
-                    return new ResourcePair(technician, serviceBay);
-                }
+        long bayCursor = 0;
+        while (true) {
+            List<ServiceBay> bayCandidates = serviceBayRepository.findAvailableForUpdateSkipLocked(
+                    dealership.getId(), bayCursor, AppointmentStatus.CONFIRMED,
+                    startsAt, endsAt, PageRequest.of(0, 1));
+            if (bayCandidates.isEmpty()) return null;
+            ServiceBay serviceBay = bayCandidates.get(0);
+            bayCursor = serviceBay.getId();
+            if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED,
+                    startsAt, endsAt)) {
+                return new ResourcePair(technician, serviceBay);
             }
         }
     }
