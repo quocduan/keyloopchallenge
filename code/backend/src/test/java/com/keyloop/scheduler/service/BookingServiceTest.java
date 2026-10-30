@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.http.HttpStatus;
 
 class BookingServiceTest {
@@ -32,7 +33,7 @@ class BookingServiceTest {
         serviceTypeRepository = mock(ServiceTypeRepository.class);
         service = new BookingService(dealershipRepository, vehicleRepository, serviceTypeRepository,
                 mock(TechnicianRepository.class), mock(ServiceBayRepository.class), mock(AppointmentRepository.class),
-                mock(org.springframework.integration.support.locks.LockRegistry.class));
+                mock(org.springframework.integration.support.locks.LockRegistry.class), new SimpleMeterRegistry());
     }
 
     @Test

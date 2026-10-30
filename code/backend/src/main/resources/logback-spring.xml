@@ -7,5 +7,15 @@
       <customFields>{"service":"${service}","environment":"${environment}"}</customFields>
     </encoder>
   </appender>
-  <root level="INFO"><appender-ref ref="JSON_CONSOLE"/></root>
+  <appender name="LOCAL_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} [requestId=%X{requestId:-} traceId=%X{traceId:-}] - %msg%n%ex</pattern>
+    </encoder>
+  </appender>
+  <springProfile name="local">
+    <root level="INFO"><appender-ref ref="LOCAL_CONSOLE"/></root>
+  </springProfile>
+  <springProfile name="!local">
+    <root level="INFO"><appender-ref ref="JSON_CONSOLE"/></root>
+  </springProfile>
 </configuration>

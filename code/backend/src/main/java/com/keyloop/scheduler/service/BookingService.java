@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import org.springframework.http.HttpStatus;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -40,6 +41,7 @@ public class BookingService {
     private final ServiceBayRepository serviceBayRepository;
     private final AppointmentRepository appointmentRepository;
     private final LockRegistry bookingLockRegistry;
+    private final MeterRegistry meterRegistry;
 
     public BookingService(DealershipRepository dealershipRepository,
                           VehicleRepository vehicleRepository,
@@ -47,7 +49,8 @@ public class BookingService {
                           TechnicianRepository technicianRepository,
                           ServiceBayRepository serviceBayRepository,
                           AppointmentRepository appointmentRepository,
-                          LockRegistry bookingLockRegistry) {
+                          LockRegistry bookingLockRegistry,
+                          MeterRegistry meterRegistry) {
         this.dealershipRepository = dealershipRepository;
         this.vehicleRepository = vehicleRepository;
         this.serviceTypeRepository = serviceTypeRepository;
@@ -55,6 +58,7 @@ public class BookingService {
         this.serviceBayRepository = serviceBayRepository;
         this.appointmentRepository = appointmentRepository;
         this.bookingLockRegistry = bookingLockRegistry;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional(readOnly = true)
@@ -85,6 +89,8 @@ public class BookingService {
 
     @Transactional
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
+        long startedAtNanos = System.nanoTime();
+        String outcome = "success";
         log.info("booking_attempt", keyValue("dealershipId", request.dealershipId()), keyValue("outcome", "attempted"));
         try {
         acquireBookingLocks(request);
@@ -114,6 +120,7 @@ public class BookingService {
                 keyValue("dealershipId", dealership.getId()), keyValue("outcome", "success"));
         return toView(appointment);
         } catch (BookingException ex) {
+            outcome = ex.getStatus() == HttpStatus.CONFLICT ? "conflict" : "rejected";
             if (ex.getStatus().is4xxClientError()) {
                 log.warn("booking_rejected", keyValue("dealershipId", request.dealershipId()),
                         keyValue("outcome", ex.getStatus() == HttpStatus.CONFLICT ? "conflict" : "rejected"),
@@ -121,9 +128,14 @@ public class BookingService {
             }
             throw ex;
         } catch (RuntimeException ex) {
+            outcome = "error";
             log.error("booking_failed", keyValue("dealershipId", request.dealershipId()),
                     keyValue("outcome", "error"), keyValue("errorType", ex.getClass().getSimpleName()), ex);
             throw ex;
+        } finally {
+            meterRegistry.counter("booking.requests", "outcome", outcome).increment();
+            meterRegistry.timer("booking.duration", "outcome", outcome)
+                    .record(System.nanoTime() - startedAtNanos, TimeUnit.NANOSECONDS);
         }
     }
 
