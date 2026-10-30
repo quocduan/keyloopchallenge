@@ -76,6 +76,7 @@ services:
       SPRING_DATASOURCE_USERNAME: scheduler
       SPRING_DATASOURCE_PASSWORD: scheduler
       SPRING_DATA_REDIS_CLUSTER_NODES: redis-node-1:6379,redis-node-2:6379,redis-node-3:6379,redis-node-4:6379,redis-node-5:6379,redis-node-6:6379
+      SCHEDULER_BOOKING_MANUALTESTDELAYENABLED: "true"
     ports:
       - "8080:8080"
     depends_on:

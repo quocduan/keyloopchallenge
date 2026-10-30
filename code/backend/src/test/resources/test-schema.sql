@@ -37,6 +37,8 @@ CREATE TABLE appointment (
     service_type_id BIGINT NOT NULL REFERENCES service_type(id),
     technician_id BIGINT NOT NULL REFERENCES technician(id),
     service_bay_id BIGINT NOT NULL REFERENCES service_bay(id),
+    idempotency_key VARCHAR(128) UNIQUE,
+    request_fingerprint VARCHAR(64),
     starts_at TIMESTAMP NOT NULL,
     ends_at TIMESTAMP NOT NULL,
     status VARCHAR(24) NOT NULL DEFAULT 'CONFIRMED',

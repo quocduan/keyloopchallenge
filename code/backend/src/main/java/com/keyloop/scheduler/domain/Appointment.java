@@ -18,6 +18,10 @@ import java.time.LocalDateTime;
 public class Appointment {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+    @Column(name = "idempotency_key", unique = true, length = 128)
+    private String idempotencyKey;
+    @Column(name = "request_fingerprint", length = 64)
+    private String requestFingerprint;
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "dealership_id", nullable = false)
     private Dealership dealership;
@@ -48,6 +52,13 @@ public class Appointment {
     public Appointment(Dealership dealership, Vehicle vehicle, ServiceType serviceType,
                        Technician technician, ServiceBay serviceBay,
                        LocalDateTime startsAt, LocalDateTime endsAt) {
+        this(dealership, vehicle, serviceType, technician, serviceBay, startsAt, endsAt, null, null);
+    }
+
+    public Appointment(Dealership dealership, Vehicle vehicle, ServiceType serviceType,
+                       Technician technician, ServiceBay serviceBay,
+                       LocalDateTime startsAt, LocalDateTime endsAt,
+                       String idempotencyKey, String requestFingerprint) {
         this.dealership = dealership;
         this.vehicle = vehicle;
         this.serviceType = serviceType;
@@ -55,9 +66,13 @@ public class Appointment {
         this.serviceBay = serviceBay;
         this.startsAt = startsAt;
         this.endsAt = endsAt;
+        this.idempotencyKey = idempotencyKey;
+        this.requestFingerprint = requestFingerprint;
     }
 
     public Long getId() { return id; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public String getRequestFingerprint() { return requestFingerprint; }
     public Dealership getDealership() { return dealership; }
     public Vehicle getVehicle() { return vehicle; }
     public ServiceType getServiceType() { return serviceType; }

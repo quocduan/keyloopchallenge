@@ -28,8 +28,17 @@ public class BookingController {
     @Operation(summary = "Book an appointment with a qualified technician and available service bay")
     @PostMapping("/appointments")
     @ResponseStatus(HttpStatus.CREATED)
-    public ApiModels.AppointmentView book(@Valid @RequestBody BookingRequests.AppointmentRequest request) {
-        return bookingService.book(request);
+    public ApiModels.AppointmentView book(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                          @RequestHeader(value = "X-Manual-Booking-Delay", defaultValue = "false") boolean manualDelay,
+                                          @Valid @RequestBody BookingRequests.AppointmentRequest request) {
+        return bookingService.book(request, idempotencyKey, manualDelay);
+    }
+
+    @Operation(summary = "Poll the outcome of an appointment request by its idempotency key")
+    @GetMapping("/appointments/idempotency-result")
+    public ApiModels.AppointmentView idempotencyResult(
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        return bookingService.getIdempotentResult(idempotencyKey);
     }
 
     @Operation(summary = "Get a confirmed appointment")

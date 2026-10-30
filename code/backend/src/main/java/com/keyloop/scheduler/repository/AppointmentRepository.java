@@ -10,6 +10,17 @@ import org.springframework.data.repository.query.Param;
 
 public interface AppointmentRepository extends JpaRepository<Appointment, Long> {
     @Query("""
+            select a from Appointment a
+            join fetch a.dealership
+            join fetch a.vehicle
+            join fetch a.serviceType
+            join fetch a.technician
+            join fetch a.serviceBay
+            where a.idempotencyKey = :key
+            """)
+    Optional<Appointment> findDetailedByIdempotencyKey(@Param("key") String key);
+
+    @Query("""
             select (count(a) > 0) from Appointment a
             where a.vehicle.id = :vehicleId and a.status = :status
               and a.startsAt < :requestedEnd and a.endsAt > :requestedStart

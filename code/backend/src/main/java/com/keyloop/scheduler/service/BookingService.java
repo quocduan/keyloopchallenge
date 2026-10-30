@@ -15,14 +15,19 @@ import com.keyloop.scheduler.repository.ServiceBayRepository;
 import com.keyloop.scheduler.repository.ServiceTypeRepository;
 import com.keyloop.scheduler.repository.TechnicianRepository;
 import com.keyloop.scheduler.repository.VehicleRepository;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import org.springframework.http.HttpStatus;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +47,8 @@ public class BookingService {
     private final AppointmentRepository appointmentRepository;
     private final LockRegistry bookingLockRegistry;
     private final MeterRegistry meterRegistry;
+    @Value("${scheduler.booking.manual-test-delay-enabled:false}")
+    private boolean manualTestDelayEnabled;
 
     public BookingService(DealershipRepository dealershipRepository,
                           VehicleRepository vehicleRepository,
@@ -89,11 +96,48 @@ public class BookingService {
 
     @Transactional
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
+        return book(request, null);
+    }
+
+    @Transactional
+    public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey) {
+        return book(request, idempotencyKey, false);
+    }
+
+    @Transactional
+    public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey,
+                                          boolean manualDelay) {
+        if (idempotencyKey != null && !idempotencyKey.matches("[\\x21-\\x7E]{1,128}")) {
+            throw new BookingException(HttpStatus.BAD_REQUEST,
+                    "Idempotency-Key must contain 1 to 128 visible ASCII characters.");
+        }
+        String requestFingerprint = idempotencyKey == null ? null : fingerprint(request);
         long startedAtNanos = System.nanoTime();
         String outcome = "success";
         log.info("booking_attempt", keyValue("dealershipId", request.dealershipId()), keyValue("outcome", "attempted"));
         try {
-        acquireBookingLocks(request);
+        acquireBookingLocks(request, idempotencyKey);
+        if (manualDelay && manualTestDelayEnabled) {
+            try {
+                Thread.sleep(15_000L);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
+                        "The manual booking test delay was interrupted; please retry.");
+            }
+        }
+        if (idempotencyKey != null) {
+            var existing = appointmentRepository.findDetailedByIdempotencyKey(idempotencyKey);
+            if (existing.isPresent()) {
+                Appointment appointment = existing.get();
+                if (!requestFingerprint.equals(appointment.getRequestFingerprint())) {
+                    throw new BookingException(HttpStatus.CONFLICT,
+                            "Idempotency-Key was already used with a different request.");
+                }
+                return toView(appointment);
+            }
+        }
+
         // The dealership row lock serializes bookings for this dealership through this API.
         Dealership dealership = dealershipRepository.findByIdForUpdate(request.dealershipId())
                 .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Dealership not found."));
@@ -115,7 +159,7 @@ public class BookingService {
 
         Appointment appointment = appointmentRepository.save(new Appointment(
                 dealership, inputs.vehicle(), inputs.serviceType(), pair.technician(), pair.serviceBay(),
-                request.desiredStart(), endsAt));
+                request.desiredStart(), endsAt, idempotencyKey, requestFingerprint));
         log.info("booking_completed", keyValue("bookingId", appointment.getId()),
                 keyValue("dealershipId", dealership.getId()), keyValue("outcome", "success"));
         return toView(appointment);
@@ -139,16 +183,62 @@ public class BookingService {
         }
     }
 
-    private void acquireBookingLocks(BookingRequests.AppointmentRequest request) {
-        List<String> keys = new ArrayList<>(List.of(
+    private String fingerprint(BookingRequests.AppointmentRequest request) {
+        String canonical = request.dealershipId() + "|" + request.vehicleId() + "|"
+                + request.serviceTypeId() + "|" + request.desiredStart();
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable.", ex);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public ApiModels.AppointmentView getIdempotentResult(String idempotencyKey) {
+        validateIdempotencyKey(idempotencyKey);
+        Lock lock = bookingLockRegistry.obtain("idempotency:" + fingerprintKey(idempotencyKey));
+        if (!lock.tryLock()) {
+            throw new BookingException(HttpStatus.ACCEPTED,
+                    "The request is being processed. Poll this endpoint again with the same Idempotency-Key.");
+        }
+        try {
+            return appointmentRepository.findDetailedByIdempotencyKey(idempotencyKey)
+                    .map(this::toView)
+                    .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND,
+                            "No request was found for this Idempotency-Key."));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void validateIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || !idempotencyKey.matches("[\\x21-\\x7E]{1,128}")) {
+            throw new BookingException(HttpStatus.BAD_REQUEST,
+                    "Idempotency-Key must contain 1 to 128 visible ASCII characters.");
+        }
+    }
+
+    private void acquireBookingLocks(BookingRequests.AppointmentRequest request, String idempotencyKey) {
+        List<String> resourceKeys = new ArrayList<>(List.of(
                 "dealership:" + request.dealershipId(), "vehicle:" + request.vehicleId()));
-        keys.sort(String::compareTo);
+        resourceKeys.sort(String::compareTo);
+        List<String> keys = new ArrayList<>();
+        if (idempotencyKey != null) keys.add("idempotency:" + fingerprintKey(idempotencyKey));
+        keys.addAll(resourceKeys);
 
         List<Lock> acquired = new ArrayList<>();
         try {
             for (String key : keys) {
                 Lock lock = bookingLockRegistry.obtain(key);
-                if (!lock.tryLock(10, TimeUnit.SECONDS)) {
+                boolean acquiredLock = key.startsWith("idempotency:")
+                        ? lock.tryLock() : lock.tryLock(10, TimeUnit.SECONDS);
+                if (!acquiredLock) {
+                    if (key.startsWith("idempotency:")) {
+                        throw new BookingException(HttpStatus.ACCEPTED,
+                                "The request is being processed. Poll GET /api/appointments/idempotency-result " +
+                                        "with the same Idempotency-Key.");
+                    }
                     throw new BookingException(HttpStatus.SERVICE_UNAVAILABLE,
                             "Booking is busy; please retry shortly.");
                 }
@@ -171,6 +261,15 @@ public class BookingService {
                 releaseLocks(acquired);
             }
         });
+    }
+
+    private String fingerprintKey(String key) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(key.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable.", ex);
+        }
     }
 
     private void releaseLocks(List<Lock> locks) {

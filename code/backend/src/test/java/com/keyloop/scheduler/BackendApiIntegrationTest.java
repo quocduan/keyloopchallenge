@@ -7,6 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.keyloop.scheduler.api.BookingRequests;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
@@ -25,6 +27,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.integration.support.locks.LockRegistry;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -40,6 +43,7 @@ class BackendApiIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private com.keyloop.scheduler.service.BookingService bookingService;
+    @Autowired private LockRegistry bookingLockRegistry;
 
     @BeforeEach
     void seedDatabase() {
@@ -211,6 +215,87 @@ class BackendApiIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT dealership_id FROM service_bay WHERE id=?", Integer.class,
                 bayId)).isEqualTo((int) DEALER_ID);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void retryWithSameIdempotencyKeyAndPayloadReturnsOriginalAppointment() throws Exception {
+        String key = "booking-retry-1";
+        String first = mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        String retry = mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+
+        assertThat(jsonLong(retry, "id")).isEqualTo(jsonLong(first, "id"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void reusingIdempotencyKeyWithDifferentPayloadReturnsConflict() throws Exception {
+        String key = "booking-retry-payload";
+        mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                .andExpect(status().isCreated());
+
+        mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START.plusHours(2), key))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        "Idempotency-Key was already used with a different request."));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentRequestsWithSameIdempotencyKeyCreateOnlyOneAppointment() throws Exception {
+        String key = "booking-retry-concurrent";
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<Integer> first = executor.submit(() -> bookConcurrentlyWithKey(ready, start, key));
+            Future<Integer> second = executor.submit(() -> bookConcurrentlyWithKey(ready, start, key));
+            if (!ready.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking workers did not become ready");
+            start.countDown();
+            List<Integer> outcomes = List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS));
+            assertThat(outcomes).allMatch(status -> status == 201 || status == 202);
+            assertThat(outcomes).contains(201);
+            mvc.perform(get("/api/appointments/idempotency-result").header("Idempotency-Key", key))
+                    .andExpect(status().isOk());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void inFlightIdempotencyKeyReturnsAcceptedAndCanBePolledUntilComplete() throws Exception {
+        String key = "booking-in-flight";
+        java.util.concurrent.locks.Lock lock = bookingLockRegistry.obtain(idempotencyLockName(key));
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ExecutorService holder = Executors.newSingleThreadExecutor()) {
+            Future<?> heldLock = holder.submit(() -> {
+                lock.lock();
+                locked.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("Test did not release the idempotency lock");
+                    }
+                } finally {
+                    lock.unlock();
+                }
+                return null;
+            });
+            if (!locked.await(5, TimeUnit.SECONDS)) throw new AssertionError("Lock holder did not acquire the lock");
+            mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                    .andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                            "The request is being processed")));
+            mvc.perform(get("/api/appointments/idempotency-result").header("Idempotency-Key", key))
+                    .andExpect(status().isAccepted());
+            release.countDown();
+            heldLock.get(5, TimeUnit.SECONDS);
+        }
+
+        String created = mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        mvc.perform(get("/api/appointments/idempotency-result").header("Idempotency-Key", key))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(jsonLong(created, "id")));
     }
 
     @Test
@@ -393,6 +478,13 @@ class BackendApiIntegrationTest {
         return bookConcurrently(DEALER_ID, ready, start);
     }
 
+    private int bookConcurrentlyWithKey(CountDownLatch ready, CountDownLatch start, String key) throws Exception {
+        ready.countDown();
+        if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking start was not released");
+        return mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                .andReturn().getResponse().getStatus();
+    }
+
     private int bookConcurrently(long dealershipId, CountDownLatch ready, CountDownLatch start) throws Exception {
         ready.countDown();
         if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("Booking start was not released");
@@ -424,6 +516,17 @@ class BackendApiIntegrationTest {
         String body = "{\"dealershipId\":" + dealershipId + ",\"vehicleId\":" + vehicleId +
                 ",\"serviceTypeId\":" + serviceTypeId + ",\"desiredStart\":\"" + startsAt + "\"}";
         return post("/api/appointments").contentType(MediaType.APPLICATION_JSON).content(body);
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder bookingRequestWithKey(
+            long dealershipId, long vehicleId, long serviceTypeId, LocalDateTime startsAt, String key) {
+        return bookingRequest(dealershipId, vehicleId, serviceTypeId, startsAt).header("Idempotency-Key", key);
+    }
+
+    private String idempotencyLockName(String key) throws Exception {
+        String hash = java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(key.getBytes(StandardCharsets.UTF_8)));
+        return "idempotency:" + hash;
     }
 
     private void insertAppointment(long technicianId, long bayId, LocalDateTime start,

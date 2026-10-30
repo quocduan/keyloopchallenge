@@ -18,5 +18,11 @@
   
 - [ ] judge entire BE code for scalability, performance, reliability, maintainability, and observability.
 - [x] use enum for status/ or find other convenient structure
-- [ ] idempotency
+- [x] idempotency for appointment creation via the `Idempotency-Key` header
 - [ ] concurrency ShedLock / OpenFeign
+- [ ] implement circut breaker for production use
+## challenge:
+- some flow or generated code are not reasonable --> adjust
+  - ex: process for idempotency key
+- redis cluster advertise internal ip address ==> can not join the debug run from host. ==> has to run in docker
+- manual test for idempotency/ concurrency
