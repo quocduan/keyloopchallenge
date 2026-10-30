@@ -6,6 +6,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.keyloop.scheduler.api.BookingRequests;
@@ -415,6 +416,35 @@ class BackendApiIntegrationTest {
             }
         }
         mvc.perform(bookingRequest(DEALER_ID, VEHICLE_ID, SERVICE_ID, START))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void implicitDatabaseLockWaitTimesOutRollsBackAndAllowsRetryWithSameKey() throws Exception {
+        String key = "booking-database-lock-timeout";
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        // Inserting an appointment needs a shared FK lock on its dealership. This exercises
+        // a real InnoDB wait that NOWAIT/SKIP LOCKED on the selected resources cannot avoid.
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> holder = holdRowLock(executor, "dealership", DEALER_ID, locked, release);
+            try {
+                assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+                executor.submit(() -> mvc.perform(bookingRequestWithKey(
+                                DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
+                        .andExpect(status().isServiceUnavailable())
+                        .andExpect(header().string("Retry-After", "1"))
+                        .andExpect(jsonPath("$.message").value(
+                                "Booking is busy or timed out; please retry shortly.")))
+                        .get(6, TimeUnit.SECONDS);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isZero();
+            } finally {
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+            }
+        }
+        mvc.perform(bookingRequestWithKey(DEALER_ID, VEHICLE_ID, SERVICE_ID, START, key))
                 .andExpect(status().isCreated());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM appointment", Integer.class)).isEqualTo(1);
     }

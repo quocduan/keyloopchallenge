@@ -9,8 +9,15 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/scheduler?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=LOCAL}
     username: ${SPRING_DATASOURCE_USERNAME:scheduler}
     password: ${SPRING_DATASOURCE_PASSWORD:scheduler}
+    hikari:
+      connection-timeout: 3000
+      # Hibernate maps lock.timeout=0 to NOWAIT, but MySQL has no per-query timed wait.
+      # Bound other InnoDB row-lock waits, including foreign-key checks during inserts.
+      connection-init-sql: SET SESSION innodb_lock_wait_timeout = ${SCHEDULER_BOOKING_DB_LOCK_WAIT_SECONDS:3}
   data:
     redis:
+      connect-timeout: 2s
+      timeout: 2s
       cluster:
         nodes: ${SPRING_DATA_REDIS_CLUSTER_NODES:redis-node-1:6379,redis-node-2:6379,redis-node-3:6379,redis-node-4:6379,redis-node-5:6379,redis-node-6:6379}
         max-redirects: 5

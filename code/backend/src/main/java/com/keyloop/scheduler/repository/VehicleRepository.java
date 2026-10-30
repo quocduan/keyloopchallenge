@@ -3,6 +3,8 @@ package com.keyloop.scheduler.repository;
 import com.keyloop.scheduler.domain.Vehicle;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
+import org.hibernate.LockOptions;
+import org.hibernate.jpa.SpecHints;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.domain.Pageable;
@@ -17,7 +19,7 @@ public interface VehicleRepository extends JpaRepository<Vehicle, Long> {
     Slice<Vehicle> findByVinContainingIgnoreCaseOrMakeContainingIgnoreCaseOrModelContainingIgnoreCase(String vin, String make, String model, Pageable pageable);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "0"))
+    @QueryHints(@QueryHint(name = SpecHints.HINT_SPEC_LOCK_TIMEOUT, value = "" + LockOptions.NO_WAIT))
     @Query("select v from Vehicle v where v.id = :id")
     Optional<Vehicle> findByIdForUpdateNowait(@Param("id") Long id);
 }

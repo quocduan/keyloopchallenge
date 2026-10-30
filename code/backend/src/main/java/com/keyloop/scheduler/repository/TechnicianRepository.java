@@ -4,6 +4,8 @@ import com.keyloop.scheduler.domain.AppointmentStatus;
 import com.keyloop.scheduler.domain.Technician;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
+import org.hibernate.LockOptions;
+import org.hibernate.jpa.SpecHints;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.springframework.data.domain.Pageable;
@@ -35,7 +37,7 @@ public interface TechnicianRepository extends JpaRepository<Technician, Long> {
             @Param("requestedEnd") LocalDateTime requestedEnd, Pageable pageable);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2"))
+    @QueryHints(@QueryHint(name = SpecHints.HINT_SPEC_LOCK_TIMEOUT, value = "" + LockOptions.SKIP_LOCKED))
     @Query(AVAILABLE_QUERY)
     List<Technician> findAvailableForUpdateSkipLocked(
             @Param("dealershipId") Long dealershipId,

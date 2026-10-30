@@ -131,17 +131,20 @@ public class BookingService {
                         : "No resource pair is available for the full service duration.");
     }
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @Transactional(isolation = Isolation.READ_COMMITTED,
+            timeoutString = "${scheduler.booking.transaction-timeout-seconds:25}")
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request) {
         return book(request, null);
     }
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @Transactional(isolation = Isolation.READ_COMMITTED,
+            timeoutString = "${scheduler.booking.transaction-timeout-seconds:25}")
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey) {
         return book(request, idempotencyKey, false);
     }
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @Transactional(isolation = Isolation.READ_COMMITTED,
+            timeoutString = "${scheduler.booking.transaction-timeout-seconds:25}")
     public ApiModels.AppointmentView book(BookingRequests.AppointmentRequest request, String idempotencyKey,
                                           boolean manualDelay) {
         if (idempotencyKey != null && !idempotencyKey.matches("[\\x21-\\x7E]{1,128}")) {
