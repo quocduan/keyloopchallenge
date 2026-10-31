@@ -32,13 +32,19 @@ spring:
 app:
   environment: ${APP_ENVIRONMENT:local}
 management:
+  metrics:
+    distribution:
+      percentiles-histogram:
+        booking.lock.wait: true
+        booking.resource.search: true
+        booking.availability: true
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
 scheduler:
   booking:
-    redis-locks-enabled: false
+    redis-locks-enabled: ${SCHEDULER_BOOKING_REDIS_LOCKS_ENABLED:true}
 springdoc:
   swagger-ui:
     path: /swagger-ui.html

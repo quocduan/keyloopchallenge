@@ -23,6 +23,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.springframework.http.HttpStatus;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.data.domain.PageRequest;
@@ -119,16 +121,24 @@ public class BookingService {
     @Transactional(readOnly = true)
     public ApiModels.AvailabilityResult availability(long dealershipId, long vehicleId, long serviceTypeId,
                                                        LocalDateTime startsAt) {
-        BookingInputs inputs = loadInputs(dealershipId, vehicleId, serviceTypeId, startsAt);
-        LocalDateTime endsAt = startsAt.plusMinutes(inputs.serviceType().getDurationMinutes());
-        boolean vehicleBooked = appointmentRepository.vehicleHasOverlap(inputs.vehicle().getId(),
-                AppointmentStatus.CONFIRMED, startsAt, endsAt);
-        boolean available = !vehicleBooked
-                && findResourcePair(inputs.dealership(), inputs.serviceType(), startsAt, endsAt) != null;
-        return new ApiModels.AvailabilityResult(available, startsAt, endsAt,
-                vehicleBooked ? "Vehicle already has a confirmed appointment during the requested time."
-                        : available ? "A qualified technician and service bay are available."
-                        : "No resource pair is available for the full service duration.");
+        long startedAt = System.nanoTime();
+        String outcome = "error";
+        try {
+            BookingInputs inputs = loadInputs(dealershipId, vehicleId, serviceTypeId, startsAt);
+            LocalDateTime endsAt = startsAt.plusMinutes(inputs.serviceType().getDurationMinutes());
+            boolean vehicleBooked = appointmentRepository.vehicleHasOverlap(inputs.vehicle().getId(),
+                    AppointmentStatus.CONFIRMED, startsAt, endsAt);
+            boolean available = !vehicleBooked
+                    && findResourcePair(inputs.dealership(), inputs.serviceType(), startsAt, endsAt) != null;
+            outcome = vehicleBooked ? "vehicle_busy" : available ? "available" : "resources_busy";
+            return new ApiModels.AvailabilityResult(available, startsAt, endsAt,
+                    vehicleBooked ? "Vehicle already has a confirmed appointment during the requested time."
+                            : available ? "A qualified technician and service bay are available."
+                            : "No resource pair is available for the full service duration.");
+        } finally {
+            meterRegistry.timer("booking.availability", "outcome", outcome)
+                    .record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
+        }
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED,
@@ -183,7 +193,9 @@ public class BookingService {
             // Vehicle and resource row locks serialize only requests that compete for the same records.
             Vehicle vehicle;
             try {
-                vehicle = vehicleRepository.findByIdForUpdateNowait(request.vehicleId())
+                vehicle = measureLock("vehicle",
+                        () -> vehicleRepository.findByIdForUpdateNowait(request.vehicleId()),
+                        java.util.Optional::isPresent)
                         .orElseThrow(() -> new BookingException(HttpStatus.NOT_FOUND, "Vehicle not found."));
             } catch (PessimisticLockingFailureException ex) {
                 throw new BookingException(HttpStatus.CONFLICT,
@@ -243,8 +255,8 @@ public class BookingService {
     @Transactional(readOnly = true)
     public ApiModels.AppointmentView getIdempotentResult(String idempotencyKey) {
         validateIdempotencyKey(idempotencyKey);
-        Lock lock = bookingLockRegistry.obtain("idempotency:" + fingerprintKey(idempotencyKey));
-        if (!lock.tryLock()) {
+        Lock lock = tryIdempotencyLock(idempotencyKey);
+        if (lock == null) {
             throw new BookingException(HttpStatus.ACCEPTED,
                     "The request is being processed. Poll this endpoint again with the same Idempotency-Key.");
         }
@@ -267,8 +279,8 @@ public class BookingService {
 
     private void acquireIdempotencyLock(String idempotencyKey) {
         if (idempotencyKey == null) return;
-        Lock lock = bookingLockRegistry.obtain("idempotency:" + fingerprintKey(idempotencyKey));
-        if (!lock.tryLock()) {
+        Lock lock = tryIdempotencyLock(idempotencyKey);
+        if (lock == null) {
             throw new BookingException(HttpStatus.ACCEPTED,
                     "The request is being processed. Poll GET /api/appointments/idempotency-result " +
                             "with the same Idempotency-Key.");
@@ -322,44 +334,109 @@ public class BookingService {
 
     private ResourcePair findResourcePair(Dealership dealership, ServiceType serviceType,
                                           LocalDateTime startsAt, LocalDateTime endsAt) {
-        List<Technician> technicians = technicianRepository.findAvailable(dealership.getId(), serviceType.getId(),
-                0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
-        if (technicians.isEmpty()) return null;
-        List<ServiceBay> serviceBays = serviceBayRepository.findAvailable(dealership.getId(),
-                0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
-        return serviceBays.isEmpty() ? null : new ResourcePair(technicians.get(0), serviceBays.get(0));
+        return measureResourceSearch(search -> {
+            search.technicianChecks++;
+            List<Technician> technicians = technicianRepository.findAvailable(dealership.getId(), serviceType.getId(),
+                    0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
+            if (technicians.isEmpty()) return null;
+            search.bayChecks++;
+            List<ServiceBay> serviceBays = serviceBayRepository.findAvailable(dealership.getId(),
+                    0L, AppointmentStatus.CONFIRMED, startsAt, endsAt, PageRequest.of(0, 1));
+            return serviceBays.isEmpty() ? null : new ResourcePair(technicians.get(0), serviceBays.get(0));
+        });
     }
 
     private ResourcePair findResourcePairSkipLocked(Dealership dealership, ServiceType serviceType,
                                                      LocalDateTime startsAt, LocalDateTime endsAt) {
-        long technicianCursor = 0;
-        Technician technician;
-        while (true) {
-            List<Technician> technicianCandidates = technicianRepository.findAvailableForUpdateSkipLocked(
-                    dealership.getId(), serviceType.getId(), technicianCursor, AppointmentStatus.CONFIRMED,
-                    startsAt, endsAt, PageRequest.of(0, 1));
-            if (technicianCandidates.isEmpty()) return null;
-            technician = technicianCandidates.get(0);
-            technicianCursor = technician.getId();
+        return measureResourceSearch(search -> {
+            long technicianCursor = 0;
+            Technician technician;
+            while (true) {
+                long cursor = technicianCursor;
+                search.technicianChecks++;
+                List<Technician> technicianCandidates = measureLock("technician",
+                        () -> technicianRepository.findAvailableForUpdateSkipLocked(
+                                dealership.getId(), serviceType.getId(), cursor, AppointmentStatus.CONFIRMED,
+                                startsAt, endsAt, PageRequest.of(0, 1)), candidates -> !candidates.isEmpty());
+                if (technicianCandidates.isEmpty()) return null;
+                technician = technicianCandidates.get(0);
+                technicianCursor = technician.getId();
 
-            // Recheck after locking in case another booking committed during candidate selection.
-            if (!appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED,
-                    startsAt, endsAt)) break;
-        }
-
-        long bayCursor = 0;
-        while (true) {
-            List<ServiceBay> bayCandidates = serviceBayRepository.findAvailableForUpdateSkipLocked(
-                    dealership.getId(), bayCursor, AppointmentStatus.CONFIRMED,
-                    startsAt, endsAt, PageRequest.of(0, 1));
-            if (bayCandidates.isEmpty()) return null;
-            ServiceBay serviceBay = bayCandidates.get(0);
-            bayCursor = serviceBay.getId();
-            if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED,
-                    startsAt, endsAt)) {
-                return new ResourcePair(technician, serviceBay);
+                // Recheck after locking in case another booking committed during candidate selection.
+                search.technicianChecks++;
+                if (!appointmentRepository.technicianHasOverlap(technician.getId(), AppointmentStatus.CONFIRMED,
+                        startsAt, endsAt)) break;
             }
+
+            long bayCursor = 0;
+            while (true) {
+                long cursor = bayCursor;
+                search.bayChecks++;
+                List<ServiceBay> bayCandidates = measureLock("bay",
+                        () -> serviceBayRepository.findAvailableForUpdateSkipLocked(
+                                dealership.getId(), cursor, AppointmentStatus.CONFIRMED,
+                                startsAt, endsAt, PageRequest.of(0, 1)), candidates -> !candidates.isEmpty());
+                if (bayCandidates.isEmpty()) return null;
+                ServiceBay serviceBay = bayCandidates.get(0);
+                bayCursor = serviceBay.getId();
+                search.bayChecks++;
+                if (!appointmentRepository.serviceBayHasOverlap(serviceBay.getId(), AppointmentStatus.CONFIRMED,
+                        startsAt, endsAt)) {
+                    return new ResourcePair(technician, serviceBay);
+                }
+            }
+        });
+    }
+
+    private ResourcePair measureResourceSearch(java.util.function.Function<SearchChecks, ResourcePair> operation) {
+        long startedAt = System.nanoTime();
+        String outcome = "error";
+        SearchChecks checks = new SearchChecks();
+        try {
+            ResourcePair result = operation.apply(checks);
+            outcome = result == null ? "unavailable" : "found";
+            return result;
+        } finally {
+            meterRegistry.timer("booking.resource.search", "outcome", outcome)
+                    .record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
+            meterRegistry.summary("booking.resource.overlap.checks", "resource", "technician")
+                    .record(checks.technicianChecks);
+            meterRegistry.summary("booking.resource.overlap.checks", "resource", "bay")
+                    .record(checks.bayChecks);
         }
+    }
+
+    private Lock tryIdempotencyLock(String key) {
+        return measureLock("idempotency", () -> {
+            Lock lock = bookingLockRegistry.obtain("idempotency:" + fingerprintKey(key));
+            return lock.tryLock() ? lock : null;
+        }, java.util.Objects::nonNull, "contended");
+    }
+
+    private <T> T measureLock(String resource, Supplier<T> operation, Predicate<T> acquired) {
+        return measureLock(resource, operation, acquired, "unavailable");
+    }
+
+    private <T> T measureLock(String resource, Supplier<T> operation, Predicate<T> acquired,
+                              String unavailableOutcome) {
+        long startedAt = System.nanoTime();
+        String outcome = "error";
+        try {
+            T result = operation.get();
+            outcome = acquired.test(result) ? "acquired" : unavailableOutcome;
+            return result;
+        } catch (PessimisticLockingFailureException ex) {
+            outcome = "contended";
+            throw ex;
+        } finally {
+            meterRegistry.timer("booking.lock.wait", "resource", resource, "outcome", outcome)
+                    .record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    private static class SearchChecks {
+        private int technicianChecks;
+        private int bayChecks;
     }
 
     private ApiModels.AppointmentView toView(Appointment appointment) {

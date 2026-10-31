@@ -28,12 +28,14 @@ Flyway creates the schema and sample dealership, vehicle, service, technician, a
 
 ## Run services separately
 
-Start MySQL and the Redis Cluster first. From this directory, run `docker compose up mysql redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6 redis-cluster-init`. Then:
+Start MySQL first. From this directory, run `docker compose up -d mysql`. Then start the backend with Redis locks disabled:
 
 ```sh
 cd backend
-mvn spring-boot:run
+SCHEDULER_BOOKING_REDIS_LOCKS_ENABLED=false mvn spring-boot:run
 ```
+
+`SCHEDULER_BOOKING_REDIS_LOCKS_ENABLED` defaults to `true`, so Docker Compose uses shared Redis idempotency locks. Set it to `false` when running a single backend separately to use in-process idempotency locks without starting the Redis Cluster. Database row locks still protect resource allocation; in-process locks do not coordinate idempotency requests across multiple backend instances.
 
 In another terminal:
 
@@ -58,7 +60,7 @@ mvn -Dflyway.url='jdbc:mysql://localhost:3306/scheduler?useSSL=false&allowPublic
     -Dflyway.password=scheduler \
     -Dflyway.locations=filesystem:src/main/resources/db/migration \
     flyway:repair
-mvn clean spring-boot:run
+SCHEDULER_BOOKING_REDIS_LOCKS_ENABLED=false mvn clean spring-boot:run
 ```
 
 Use the URL and credentials configured for your local MySQL instance if they differ.
@@ -87,3 +89,32 @@ To manually exercise the in-flight path in the UI, enable **Simulate duplicate r
 Backend logs use readable console output for the default `local` profile and JSON to stdout for other profiles. Set `APP_ENVIRONMENT` to select the default profile and label the deployment environment; each HTTP request also receives an `X-Request-Id` (incoming safe values are reused) and returns it in the response. Booking events include outcome and dealership ID, with booking ID on success. A valid W3C `traceparent` contributes its trace ID. Do not add customer, VIN, or other personal details to log fields.
 
 All sample data is for local development only. Authentication, authorization, timezone policy, cancellation, rescheduling, and production deployment configuration are not included in this starter.
+
+## Booking metrics
+
+Actuator exposes these metrics after their corresponding operations have run:
+
+| Metric | Type | Tags |
+| --- | --- | --- |
+| `booking.lock.wait` | Timer | `resource=vehicle/technician/bay/idempotency`; `outcome=acquired/unavailable/contended/error` |
+| `booking.resource.search` | Timer | `outcome=found/unavailable/error` |
+| `booking.resource.overlap.checks` | Distribution summary | `resource=technician/bay` |
+| `booking.availability` | Timer | `outcome=available/vehicle_busy/resources_busy/error` |
+
+`booking.lock.wait` measures the complete lock acquisition operation, including database candidate selection or Redis communication; it is not a database engine measurement of time blocked on a row lock. NOWAIT/SKIP LOCKED operations can finish quickly even under contention. `unavailable` means no matching row was returned (missing, busy, or skipped); `contended` means an explicit database lock failure or a rejected idempotency lock acquisition. Idempotency acquisition is measured for both POST booking and GET polling. There is no dealership lock in the current booking flow.
+
+Each resource search records one overlap-check summary sample per resource, including zero when that resource was never queried. Values count attempted queries containing overlap predicates, both candidate selection and booking rechecks after locking. They do not count rows examined internally by SQL, and exclude the separate vehicle overlap check. Failures still record elapsed time and attempted query counts. Availability validation and dependency failures use `outcome=error`.
+
+The three timers publish histogram buckets for Prometheus percentile queries. Tags contain fixed categories only; identifiers are not metric tags.
+
+For example, after checking availability and submitting a booking:
+
+```sh
+curl -s http://localhost:8080/actuator/metrics/booking.lock.wait
+curl -s http://localhost:8080/actuator/metrics/booking.resource.search
+curl -s http://localhost:8080/actuator/metrics/booking.resource.overlap.checks
+curl -s http://localhost:8080/actuator/metrics/booking.availability
+curl -s http://localhost:8080/actuator/prometheus | rg 'booking_(lock_wait|resource_search|resource_overlap_checks|availability)'
+```
+
+Prometheus exports timer values in seconds, for example `booking_lock_wait_seconds_count`, `booking_lock_wait_seconds_sum`, and `booking_lock_wait_seconds_bucket`. Summary `_count` is the number of searches sampled and `_sum` is the total number of attempted overlap queries for that resource.
