@@ -2,18 +2,29 @@
 
 Scenario A starter with a Spring Boot REST API, Spring Data JPA/Hibernate persistence, MySQL, OpenAPI/Swagger UI, and a Vue 3 booking page.
 
+See the [system design](../System-Design-Document-scenario-a-c4.md), [technology choices](../scenario-a-technologies.md), and [submission overview](../README.md). Unless stated otherwise, commands below start in the `code/` directory.
+
+## AI Collaboration Narrative
+
+I used AI as an implementation and review partner, while retaining responsibility for requirements, architecture, and acceptance of the code. I started with the booking rules, C4 architecture, BPMN flow, and technology choices before requesting a scaffold. I then guided the AI through focused changes, using concrete acceptance criteria: a booking must reserve a qualified technician and bay for the full service duration, prevent overlapping bookings for the same vehicle, and persist the reservation atomically. Design decisions and follow-up work were recorded in the architecture documents and `todo.md` at the repository root.
+
+I reviewed generated code against those requirements and the selected stack, challenged assumptions, and refined the implementation in small steps. For example, I directed the initial JDBC implementation to be replaced with the agreed Spring Data JPA/Hibernate approach. I also identified the missing same-vehicle overlap rule and required it to apply across services and dealerships, even when another technician and bay were available. When H2 limitations affected locking tests, I directed the tests to use MySQL rather than accepting changes to application behavior solely to satisfy the test database.
+
+Verification combined code review, automated tests, and manual booking scenarios. The backend test cases cover validation, technician qualification, interval boundaries, persistence and rollback, concurrent resource allocation, and idempotent retries. MySQL integration tests exercise the database behavior that matters for booking correctness, including `NOWAIT`, `SKIP LOCKED`, and competing requests. Manual UI checks exercise the duplicate-request flow and polling for an in-flight booking. Failures were investigated to distinguish application defects from fixture, migration, or environment problems, then the relevant checks were repeated after corrections.
+
+To assess final code quality, I reviewed scalability, performance, reliability, maintainability, and observability as well as functional behavior. This led to status-aware overlap indexes, finer-grained resource locking, bounded reference-data queries, explicit timeout/error handling, and booking metrics and structured logs. I checked that Flyway migrations and JPA mappings remained consistent and that the README described the implemented API behavior and operational constraints. AI suggestions were accepted only after checking their fit with the design and available evidence. Performance tests remain opt-in, coverage measurement is still a follow-up item, and the production limitations listed below remain outside this starter's scope.
+
 ## Requirements
 
-- Java 21
-- Maven 3.9+
-- Node.js 22.18+ (required by current Vue tooling)
-- Docker Desktop / Docker Engine with Compose
+- Docker Desktop / Docker Engine with Compose for the full container setup.
+- Java 21 and Maven 3.9+ for local backend builds and tests.
+- Node.js 22.18+ with npm for local frontend builds.
 
-The machine used to create this scaffold currently has Java 11 and Node 18, so those runtimes must be upgraded before local builds will work.
+Docker builds supply their own Java, Maven, and Node runtimes. Check `java -version`, `mvn -version`, and `node --version` before building locally.
 
 ## Run with Docker Compose
 
-From this directory:
+From the repository root, first run `cd code`. Then build and start the application:
 
 ```sh
 docker compose up --build
@@ -24,7 +35,30 @@ docker compose up --build
 - OpenAPI JSON: http://localhost:8080/v3/api-docs
 - MySQL: localhost:3306 (database `scheduler`, user `scheduler`)
 
-Flyway creates the schema and sample dealership, vehicle, service, technician, and bay records on startup.
+Flyway creates the schema and sample dealership, vehicle, service, technician, and bay records on startup. Wait for the backend to start, then open the Vue UI, choose a future appointment time, check availability, and confirm a booking.
+
+Stop services with `docker compose down`; named volumes retain database and Redis data. The Docker backend image skips tests during packaging, so run the test suite separately as described below.
+
+## Build locally
+
+For a backend build that includes tests, prepare the dedicated MySQL test database using the next section, then run from `code/`:
+
+```sh
+cd backend
+mvn clean package
+```
+
+The executable JAR is `backend/target/scheduler-0.1.0-SNAPSHOT.jar` relative to `code/`. To compile and package without running tests, use `mvn clean package -DskipTests`; this does not verify booking behavior.
+
+For the frontend, start from `code/` in another terminal:
+
+```sh
+cd frontend
+npm ci
+npm run build
+```
+
+The generated frontend files are in `frontend/dist/`. The supplied Docker setup runs the Vite development server; deploying the generated files requires a web server and API routing configuration.
 
 ## Run services separately
 
@@ -41,7 +75,7 @@ In another terminal:
 
 ```sh
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -49,7 +83,26 @@ The frontend dev server proxies `/api` requests to `http://localhost:8080`.
 
 ## Backend tests
 
-Run the backend suite with `cd backend && mvn test`. Integration and opt-in performance tests use a dedicated MySQL database named `scheduler_test`; create it before running tests and grant the configured test user permission to create/drop tables and triggers. Set `TEST_MYSQL_URL`, `TEST_MYSQL_USERNAME`, and `TEST_MYSQL_PASSWORD` to point to another MySQL test database. The performance suite is opt-in: add `-DrunPerformanceTests=true` and configure its `performance.*` properties as needed. Do not point these tests at a database containing data you need; the suites delete and reseed their tables.
+For the bundled local MySQL instance, run the following from `code/`. Once MySQL is healthy (`docker compose ps mysql`), create the separate test database and grant the demo user access:
+
+```sh
+docker compose up -d mysql
+docker compose exec -T mysql mysql -uroot -plocal-root-password <<'SQL'
+CREATE DATABASE IF NOT EXISTS scheduler_test;
+GRANT ALL PRIVILEGES ON scheduler_test.* TO 'scheduler'@'%';
+SQL
+```
+
+Then run from `code/`:
+
+```sh
+cd backend
+mvn test
+```
+
+Redis is disabled in the test profile, so the backend tests do not require the Redis Cluster. There is no frontend automated test suite; `npm run build` checks that the demo client bundles successfully.
+
+ Integration and opt-in performance tests use a dedicated MySQL database named `scheduler_test`; create it before running tests and grant the configured test user permission to create/drop tables and triggers. Set `TEST_MYSQL_URL`, `TEST_MYSQL_USERNAME`, and `TEST_MYSQL_PASSWORD` to point to another MySQL test database. The performance suite is opt-in: add `-DrunPerformanceTests=true` and configure its `performance.*` properties as needed. Do not point these tests at a database containing data you need; the suites delete and reseed their tables.
 
 If a local MySQL Flyway migration fails, repair the schema history after correcting the migration, then restart with a clean build. For the default local database credentials:
 
